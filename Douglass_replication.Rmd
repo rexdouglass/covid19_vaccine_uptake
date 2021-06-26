@@ -1,0 +1,864 @@
+---
+title: "Trump Support, Vaccination Rates, and Moving Beyond Correlation to Explanation."
+author: "Rex W. Douglass"
+output:
+  html_notebook
+---
+
+```{r}
+
+knitr::opts_chunk$set(fig.width = 8, fig.height = 8, message=F, warning=F, echo=F, results=F)
+
+#Library Loads
+library(pacman)
+p_load(tidyverse)
+p_load(janitor)
+p_load(tidylog)
+p_load(stringr)
+p_load(ggdag)
+p_load(data.table)
+p_load(sf)
+options(tigris_use_cache = TRUE)
+```
+
+# Introduction
+
+What explains vaccine uptake across counties in the US? The answer to this question has important implications for understanding and planning for the future course of the pandemic as pockets with low uptake become hotspots for future waves and especially future variants.
+
+# Part 1: Theorizing the Data Generating Process
+
+You may have seen [pairwise correlation plots](https://twitter.com/PollsAndVotes/status/1404667067392053248) that posit a data generating process of uptake like this.
+
+
+```{r}
+
+dag1 <- dagify(Uptake ~~ TrumpVote)
+#dag_paths(bigger_dag)  
+#ggdag_paths(bigger_dag)
+
+p <- dag1 %>% 
+  ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+    geom_dag_point(col="lightblue") +
+    geom_dag_edges(label_colour = "black") +
+    geom_dag_text(col = "black") +
+    theme_dag() #+
+    #theme(plot.margin=unit(c(0,0,0,0),"cm")) #  +
+    #expand_limits(y = c(1, 1), x = c(1, 1))
+
+```
+
+```{r, results=T, fig.width = 8, fig.height = 2}
+p
+```
+
+
+Others have [started to posit](https://tompepinsky.com/2021/06/24/trump-support-and-vaccination-rates-some-hypotheses-and-some-data/) a multivariate data generating process of vaccine uptake that is a linear function of a county's demographic characteristics, urbanity, and recent presidential vote choices.
+
+
+```{r}
+
+bigger_dag <- dagify(Uptake ~ TrumpVote + TrumpSwing + Demographics + Rural)
+#dag_paths(bigger_dag)  
+#ggdag_paths(bigger_dag)
+
+p <- bigger_dag %>% 
+  ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+    geom_dag_point(col="lightblue") +
+    geom_dag_edges(label_colour = "black") +
+    geom_dag_text(col = "black") +
+    theme_dag()
+
+```
+
+```{r, results=T, fig.width = 8, fig.height = 6}
+p
+```
+
+This DGP is better in that it considers additional factors, but it is still an unlikely and incomplete data generating process where TrumpVote is exogenous to demographic and urbanity characteristics of a county. Worse, some of the features are mechanically related to one another, e.g. Log-Population and Rural are included in the same model despite being functions of one another. Likewise TrumpVote and TrumpUpswing are also mechanically related, a county with a 100% swing necessarily has a 100% Trump Vote with a nonlinear function for every other permutation. Drawing the DGP with these additional elements quickly starts to become untenable below.
+
+
+```{r}
+#+ Education + MedicalResources
+bigger_dag2 <- dagify(
+                     Uptake ~ TrumpVote + TrumpSwing + Demographics + Rural, 
+                     TrumpVote ~ Demographics+ Rural,
+                     TrumpSwing ~ Demographics + Rural,
+                     TrumpVote ~ TrumpSwing,
+                     TrumpSwing  ~~ TrumpVote,
+                     Demographics ~~ Rural
+                     )
+#dag_paths(bigger_dag)  
+#ggdag_paths(bigger_dag)
+
+p <- bigger_dag2 %>% 
+  ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+    geom_dag_point(col="lightblue") +
+    #geom_dag_edges_arc() +
+    geom_dag_edges(label_colour = "black") +
+    geom_dag_text(col = "black") +
+    theme_dag() 
+
+```
+
+```{r, results=T, fig.width = 10, fig.height = 10}
+p
+```
+
+Not to pile on to an already catastrophic causal inference problem, but the course of the pandemic (say in terms of per capita deaths) likely impacted voting decisions and then later vaccine uptake, and education impacted both as well. An example of the kind of graph we could draw including those components is below. In particular, it necessarily includes demographic characteristics like age percentiles because they were  an explicit part of the phased Vaccine rollout process and also strongly relate to vote outcomes.
+
+
+```{r}
+#+ Education + MedicalResources
+bigger_dag3 <- dagify(
+                     Uptake ~ TrumpVote + TrumpSwing + Demographics + Rural + Education + DeathsPerCap + Age + Wealth + HealthResources, 
+                     TrumpVote ~ Demographics + Rural + Education + DeathsPerCap + Age,
+                     TrumpSwing ~ Demographics + Rural + Education + DeathsPerCap + Age,
+                     TrumpVote ~ TrumpSwing,
+                     TrumpSwing  ~~ TrumpVote,
+                     Demographics ~~ Rural,
+                     DeathsPerCap ~ Demographics + Rural + Education  + Age + HealthResources + Wealth,
+                     Education ~ Age,
+                     HealthResources ~ Wealth
+                     )
+#dag_paths(bigger_dag)  
+#ggdag_paths(bigger_dag)
+
+p <- bigger_dag3 %>% 
+  ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+    geom_dag_point(col="lightblue") +
+    #geom_dag_edges_arc() +
+    geom_dag_edges(label_colour = "black") +
+    geom_dag_text(col = "black") +
+    theme_dag() 
+
+```
+
+```{r, results=T, fig.width = 10, fig.height = 10}
+p
+```
+
+In sum, the simplest toy causal diagram is outside of the reach of a single linear model. Any individual parameter from a model fit to only a subset of these paths is not an estimate of the causal estimand. Further, there are only about 3000 counties worth the datapoints to disentangle this mess, and those counties are auto-correlated in lots of ways not taken into account here which further reduces the unique information available.
+
+# Part 2: Estimating the Data Generating Process
+
+After hopefully discouraging you from interpreting a conditional correlation in a shallow panel dataset as evidence one way or the other of a causal relationship, what ought we do? One alternative is to frame this as a purely observational problem, where our goal is to search across possible data generating processes that could have been behind these observations and then rank them on some measure of performance. The goal is explain variation in an outcome- actually account for variation in vaccine uptake. The claim to validity is that an explanation holds out of domain on new unseen draws, e.g. out of sample on a hold out test or future observations. The importance of any one feature lies only in the unique information that it contributes to solving this task, where features with redundant or unhelpful information are rated lower.
+
+## The Left Hand Side Vaccine Uptake
+
+### CDC County Data
+
+How should we measure vaccine uptake? I being with Tom Pepinsky's coding decisions in his [blog post](https://tompepinsky.com/2021/06/24/trump-support-and-vaccination-rates-some-hypotheses-and-some-data/) on the topic and his [replicable code repo](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/M5BEXF). His outcome is series_complete_18plus_pop_pct which is defined as "Percent of people 18+ who are fully vaccinated (have second dose of a two-dose vaccine or one dose of a single-dose vaccine) based on the jurisdiction and county where recipient lives" compiled by the CDC in the [COVID-19 Vaccinations in the United States,County](https://data.cdc.gov/Vaccinations/COVID-19-Vaccinations-in-the-United-States-County/8xkx-amqh) dataset. The only cleaning performed is to drop 0% and 100% as invalid entries, which I agree with. That leaves observations for 2,946 counties.
+
+```{r}
+
+#If it's not today then don't run 
+lhs_cdc <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data/cdc_vaccine_rates.Rds" )
+if(lhs_cdc$retrieved[1]!=Sys.Date()){
+  dl <- fread("https://data.cdc.gov/api/views/8xkx-amqh/rows.csv?accessType=DOWNLOAD") 
+  lhs_cdc <-  dl %>% 
+       clean_names() %>%
+       mutate(date=date %>% as.character() %>% lubridate::mdy()) %>%
+       filter(date==Sys.Date()) %>% #Update to whichever date we pull the Democratandchronicle data
+       mutate(fips=fips %>% as.numeric()) %>%
+       mutate(series_complete_18plus_pop_pct=series_complete_18plus_pop_pct/100) %>%
+       mutate(series_complete_pop_pct=series_complete_pop_pct/100) %>%
+       mutate(series_complete_18plus_pop_pct=ifelse(series_complete_18plus_pop_pct %in% c(0,1), NA, series_complete_18plus_pop_pct )) %>%
+       mutate(series_complete_pop_pct=ifelse(series_complete_pop_pct %in% c(0,1), NA, series_complete_pop_pct )) %>%
+    
+       #filter(series_complete_18plus_pop_pct!=0 & series_complete_18plus_pop_pct!=1) %>%
+       dplyr::select(recip_state, recip_county, fips,series_complete_18plus_pop_pct, series_complete_pop_pct) %>%
+       mutate(retrieved=Sys.Date())
+  dim(lhs_cdc)
+  saveRDS(lhs_cdc, "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data/cdc_vaccine_rates.Rds" )
+}
+
+```
+The distribution of up Uptake in the country is still abysmal, with the median county at only 41%, and the 3rd quartile barely at 50%. 
+```{r, results=T}
+lhs_cdc %>% pull(series_complete_18plus_pop_pct) %>% summary()
+```
+90% of counties land between 12% and 63%. The measurement task therefore isn't so much to explain high vaccine uptake from low, but rather to identify stragglers with low uptake form the central mass.
+```{r}
+lhs_cdc %>% pull(series_complete_18plus_pop_pct) %>% quantile(prob=seq(0,1,.01), na.rm=T)
+```
+
+```{r, fig.width = 6, fig.height = 4}
+lhs_cdc %>% ggplot(aes(x=series_complete_18plus_pop_pct)) + geom_histogram(bins=100)
+```
+So who are the stragglers? Here's a map showing the rates in the data. Texas is missing entirely for reporting issues. A few very rural counties are missing as well. The stragglers appear to be concentrated in three states, George, Virginia, and West Virginia and more sporadically across the midwest. Bounding effects that show state are evidence of geogrpahic and administrative auto-correlation, from administration, reporting, or both.
+
+```{r}
+
+#devtools::install_github("UrbanInstitute/urbnmapr")
+library(tidyverse)
+library(urbnmapr)
+
+map_data <- left_join(lhs_cdc, urbnmapr::counties %>% mutate(county_fips=county_fips %>% as.numeric() ), by = c("fips"="county_fips") )
+p <- map_data %>%
+  ggplot(aes(long, lat, group = group, fill = series_complete_18plus_pop_pct)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "albers", lat0 = 39, lat1 = 45) +
+  labs(fill = "Percent Vaccine Uptake")
+
+```
+```{r, fig.width = 12, fig.height = 8, results=T}
+p
+```
+
+Here is Uptake in tabular format that you can browse in its entirety. Sorted by least Uptake, the top 100 offenders are all VA, WV, GA and one county from MA. The values aren't just low but near 0, which should set off alarm bells that there might still be measurement processes we haven't accounted for. In fact, if we look at the [New York Times Vaccine tracker](https://www.nytimes.com/interactive/2020/us/covid-19-vaccine-doses.html), we find that they leave out precisely those three states as "insufficient data." The [Washington Post's vaccine tracker](https://www.washingtonpost.com/graphics/2020/health/covid-vaccine-states-distribution-doses/) excludes another three states, New Mexico, Colorado, and South Dakota because less than 85% of vaccination records include a person's county of residence. 
+
+
+```{r, results='asis'}
+
+p_load(DT); #install.packages('DT')
+DT::datatable(lhs_cdc %>% arrange(series_complete_18plus_pop_pct), rownames = FALSE)
+
+```
+
+We can start groundtruth on our own. Let's begin at the top- do we believe that Danville City really only has a 0.002% vaccination rate? In a population of 43,055, that would imply only 86 people got vaccinated (less excluding children). If we go directly to Virginia's health department website and look up Danville we find 44.6% of the adult population is fully vaccinated. Likewise for other low performing counties, the institutional data generating process has a reporting mechanism which systematically undereports through this federal mechanism but does report correctly at the state level. This is my experience with every single off the shelf COVID-19 dataset.  The institutional data generating process inserts variation that is often larger in magnitude than variation from the empirical data generating process, and we end up chasing ghosts built by bureaucracies instead of the actual epidemiological process we're interested in. So you know what time it is. Time to add more nodes to our DGP. 
+
+```{r}
+#+ Education + MedicalResources
+bigger_dag3 <- dagify(
+                     Uptake ~ TrumpVote + TrumpSwing + Demographics + Rural + Education + DeathsPerCap + Age + Wealth + HealthResources + CDCAdmin + StateAdmin, 
+                     TrumpVote ~ Demographics + Rural + Education + DeathsPerCap + Age,
+                     TrumpSwing ~ Demographics + Rural + Education + DeathsPerCap + Age,
+                     TrumpVote ~ TrumpSwing,
+                     TrumpSwing  ~~ TrumpVote,
+                     LogPop ~~ Rural,
+                     DeathsPerCap ~ LogPop + Rural + Education  + Age + HealthResources + Wealth,
+                     Education ~ Age,
+                     HealthResources ~ Wealth
+                     )
+#dag_paths(bigger_dag)  
+#ggdag_paths(bigger_dag)
+
+p <- bigger_dag3 %>% 
+  ggplot(aes(x = x, y = y, xend = xend, yend = yend)) +
+    geom_dag_point(col="lightblue") +
+    #geom_dag_edges_arc() +
+    geom_dag_edges(label_colour = "black") +
+    geom_dag_text(col = "black") +
+    theme_dag() 
+
+```
+
+```{r, results=T, fig.width = 10, fig.height = 10}
+p
+```
+
+### USA Today Network
+
+The USA Today Network produces databases and visualizations for affiliate, including the [COVID-19 Vaccine Tracker](https://data.democratandchronicle.com/covid-19-vaccine-tracker/). The details of the database are obscure but it pulls CDC data and fills in missing or broken states with data directly from state health agencies. We can pull their numbers for each county and compare them to the CDC counts. Their data cover 3,222 counties.
+
+```{r}
+
+p_load(rvest)
+fromscratch=F
+if(fromscratch){
+  
+  link <- "https://data.democratandchronicle.com/covid-19-vaccine-tracker/"
+  driver <- read_html(link)  
+  state_links <- driver %>%
+  html_nodes("table") %>%
+  html_nodes("td") %>% 
+  html_nodes("a") %>% 
+  html_attr("href")
+
+  df_list <- list()
+  for(state in state_links[2:length(state_links)]){
+    print(state)
+    county_table <- NULL
+    link=paste0("https://data.democratandchronicle.com/",state)
+    driver <- read_html(link)
+    county_links <-   driver %>%
+            html_nodes("table") %>%
+            html_nodes("td") %>% 
+            html_nodes("a") %>% 
+            html_attr("href")
+    allTables <- html_nodes(driver, css = "table")
+    county_table <- html_table(allTables)[[3]] %>% janitor::clean_names()
+    county_table$urls <- county_links
+    county_table$state <- state
+    df_list[[state]] <- county_table
+  }   
+
+  vaccine_rates <- bind_rows(df_list)
+  vaccine_rates$population_numeric <- vaccine_rates$population %>% str_replace(",","") %>% as.numeric()
+  vaccine_rates$people_fully_vaccinated_commas <- vaccine_rates$people_fully_vaccinated %>%   str_count(pattern = ",")
+  vaccine_rates$percent_vaccinated <- vaccine_rates$people_fully_vaccinated %>%  str_sub(-6,-2) %>% as.numeric()
+  vaccine_rates$percent_vaccinated2 <- vaccine_rates$people_fully_vaccinated %>% str_replace(".*,[0-9][0-9][0-9]","") 
+  condition <- nchar(vaccine_rates$percent_vaccinated2)==9 #36953.56% #If it's 9 long then we know it's 3 digits of population and 6 digits of percent because neither can be longer without introducing a comma
+  vaccine_rates$percent_vaccinated2[condition] <- vaccine_rates$people_fully_vaccinated[condition] %>% str_replace("^[0-9][0-9][0-9]","")
+  #"49330.02%"
+  vaccine_rates$percent_vaccinated2_nchar <- nchar(vaccine_rates$percent_vaccinated2)
+  
+  condition <- nchar(vaccine_rates$percent_vaccinated2)==7 #459.91% remove the first two, if it were a double digit percentage the count would have to be bigger
+  vaccine_rates$percent_vaccinated2[condition] <- vaccine_rates$people_fully_vaccinated[condition] %>% str_replace("^[0-9][0-9]","")
+
+  condition <- nchar(vaccine_rates$percent_vaccinated2)==8 #I think this miscodes 1 county, I'm ok with it
+  vaccine_rates$percent_vaccinated2[condition] <- vaccine_rates$people_fully_vaccinated[condition] %>% str_replace("^[0-9][0-9][0-9]","")
+  
+  vaccine_rates$percent_vaccinated2 <- vaccine_rates$percent_vaccinated2 %>% str_replace("%","") %>% as.numeric()
+   
+  vaccine_rates$fips <- vaccine_rates$urls %>%  str_sub(-6,-2)
+  
+  vaccine_rates$retrieved <- Sys.Date()
+  saveRDS(vaccine_rates, "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data/democratandchronicle_vaccine_rates.Rds")
+}
+
+lhs_usatodaynetwork <-  readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data/democratandchronicle_vaccine_rates.Rds")
+
+```
+
+### CHHS
+
+California's numbers
+
+```{r}
+
+chhs <- fread("https://data.chhs.ca.gov/dataset/e283ee5a-cf18-4f20-a92c-ee94a2866ccd/resource/130d7ba2-b6eb-438d-a412-741bde207e1c/download/covid19vaccinesbycounty.csv")
+dim(chhs)
+
+ca_today <- chhs %>% filter(administered_date=="2021-06-24")
+
+```
+
+http://www.vaccinetracking.us/
+https://raw.githubusercontent.com/bansallab/vaccinetracking/main/vacc_data/data_master_county.csv
+
+
+```{r}
+
+vaccinetracking <- fread("https://raw.githubusercontent.com/bansallab/vaccinetracking/main/vacc_data/data_master_county.csv")
+dim(vaccinetracking)
+
+vaccinetracking <- vaccinetracking %>% 
+  clean_names() %>%
+  mutate(date=date %>% as.Date()) %>%
+  filter(date==max(date)) %>% 
+  filter(case_type=="Complete") %>%
+  mutate(uptake_vaccinetracking=cases/popn)
+
+lhs_vaccinetracking <- vaccinetracking %>% dplyr::select(fips=county, uptake_vaccinetracking)
+
+```
+
+
+### Compare and Synthesize 
+
+Compared to the Democrat and Chronicle data, the CDC systematically under reports vaccinations in VA, GA, NC, etc. The CDC data have higher numbers for PR as well as a few other counties. The Democrat and Chronicle data also have all of Texas.
+
+```{r}
+
+lhs <- lhs_usatodaynetwork %>% 
+       dplyr::select(fips, uptake_demchron = percent_vaccinated2) %>%
+        mutate(fips=as.numeric(fips)) %>% 
+        mutate(uptake_demchron=uptake_demchron/100) %>%
+       full_join(lhs_cdc) %>% 
+       dplyr::rename(uptake_cdc=series_complete_pop_pct) %>%
+       full_join(lhs_vaccinetracking) %>% 
+       group_by(fips) %>%
+         mutate(uptake_max=max(uptake_cdc,uptake_demchron,uptake_vaccinetracking, na.rm=T)) %>%
+       ungroup() %>%
+       filter(!is.na(fips)) %>%
+        filter(is.finite(uptake_max))
+       
+
+
+```
+
+```{r}
+p <- lhs %>% ggplot(aes(x=uptake_cdc, y=uptake_demchron, color=recip_state, label=recip_state)) + geom_text(size=2) + theme(legend.position = "none")
+p
+```
+
+Comparing Vaccinetracking.us to USA Today finds higher coverage for several counties in MA, WV, and CO.
+
+```{r}
+p <- lhs %>% ggplot(aes(x=uptake_demchron, y=uptake_vaccinetracking, color=recip_state, label=recip_state)) + geom_text(size=2) + theme(legend.position = "none")
+p
+```
+
+
+We therefore change our proxy choice for vaccination uptake to percent of the whole population with both doses, as measured by the maximum reported by either the CDC or the Democrat and Chronicle. Here are what those distributions look like. Now our measure looks more normally distributed, with the nasty bump of under-reporting removed, and the task is starting to look more like predicting between low, medium, and high uptake.
+```{r}
+
+library(ggridges)
+
+
+p <- lhs %>%
+     dplyr::select(fips, uptake_demchron,uptake_cdc, uptake_vaccinetracking, uptake_max) %>%
+     pivot_longer(-fips) %>%
+     ggplot(aes(x=value, color=name, fill=name)) + geom_histogram() + theme(legend.position = "none") + 
+     facet_wrap(~name, ncol=1)#y=name, 
+
+```
+
+```{r, result=T}
+p
+
+```
+The geographic artifacts have started to disappear and the interesting variation is starting to look like the uptake around the coast and border.
+
+```{r}
+
+#devtools::install_github("UrbanInstitute/urbnmapr")
+library(tidyverse)
+library(urbnmapr)
+
+map_data <- left_join(lhs, urbnmapr::counties %>% mutate(county_fips=county_fips %>% as.numeric() ), by = c("fips"="county_fips") )
+p <- map_data %>%
+  ggplot(aes(long, lat, group = group, fill = uptake_max)) +
+  geom_polygon(color = NA) +
+  coord_map(projection = "albers", lat0 = 39, lat1 = 45) +
+  labs(fill = "Percent Vaccine Uptake (Max)")
+
+```
+
+```{r, fig.width = 12, fig.height = 8, results=T}
+p
+```
+
+Who are our remaining stragglers? Nantucket County, MA is an island with a population of 11,399. Going to [Massachusetts's health reports directly](https://www.mass.gov/doc/weekly-covid-19-vaccination-report-june-24-2021/download), finds that it's actually 81%.
+
+```{r, results='asis'}
+
+p_load(DT); #install.packages('DT')
+DT::datatable(lhs %>% arrange(uptake_max), rownames = FALSE)
+
+```
+
+
+## The Training/Validation/Test Split
+
+Given the high degree of spatial and administrative autocorrelation, what would count as independent draws from the same data generating process isn't clear. At a minimum, we do not want to train on a county and then test on its immediate neighbor because we will attribute high performance to the features in our model even though it's really some unknown additional local factor that we aren't including. Since these data are small, we can afford to run many iterations. I propose a 3-fold train/validation/test setup. Using K-means I clustered states into five groups which split the U.S. into three large slices and two distant degenerate folds from Island states/territories which I collapse to the nearest main fols.
+
+```{r}
+
+library(tidyverse)
+library(urbnmapr)
+
+library(tigris)
+#library(leaflet)
+states_sf <- states(cb = TRUE)
+
+#states_sf <- get_urbn_map("states", sf = TRUE) #they place alaska in as if its next to texas
+
+centroids <- states_sf %>% st_centroid() 
+centroids <- cbind(centroids , data.frame(st_coordinates(centroids)) )
+
+
+library(sperrorest); #install.packages('sperrorest')
+  
+coords_df <- data.frame(st_coordinates(centroids))
+resamp <- partition_kmeans(coords_df, nfold = 5, coords = c("X", "Y"), repetition = 1:1, return_factor=T)
+
+#plot(resamp, ecuador)
+#folds = partition_tiles(coords_df, coords = c("X", "Y"), nsplit=c(2,2) ) #, min_n=0.8
+
+states_sf$fold = resamp$`1`
+states_sf <- states_sf %>% 
+             mutate(fold = recode(as.character(fold), '1'=2,'5'=2, '2'=2, '3'=3, '3'=3, '4'=4)) %>% 
+             mutate(fold = recode(as.character(fold), '2'=1,'3'=2, '4'=3)) #relevel them
+
+
+table(states_sf$fold)
+```
+
+
+```{r, fig.width = 6, fig.height = 4, result=T}
+states_sf  %>%
+  ggplot(aes(fill = fold %>% as.factor() )) +
+  geom_sf() + xlim(c(NA,-50)) + ylim(c(10,70))
+
+```
+
+## The Right Hand Side
+
+
+```{r, message = FALSE, results=F}
+
+setwd("/home/skynet3/Downloads/vacines/")
+
+#a <- fread("1976-2020-president.csv")
+
+a <- fread("https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-counties.csv") %>%
+     filter(date=="2020-11-04") %>% dplyr::select(fips, deaths)
+
+b <- fread("2012pres.csv") %>% clean_names() %>%
+     mutate(romney_perc=100*willard_mitt_romney / (barack_h_obama + willard_mitt_romney)) %>%
+    dplyr::select(fips,romney_perc)
+
+c <- fread("2020pres.csv") %>% clean_names() %>% 
+     mutate(trump_perc=100*donald_j_trump / (joseph_r_biden_jr + donald_j_trump)) %>%
+     dplyr::select(fips,trump_perc)
+
+d <- fread("cc-est2019-alldata.csv") %>% clean_names() %>%
+     filter(year==12, agegrp==0) %>%
+     mutate(black_perc = 100*(bac_male + bac_female)/tot_pop) %>%
+     mutate(native_perc = 100*(iac_male + iac_female)/tot_pop) %>%
+     mutate(hispanic_perc = 100*(h_male + h_female)/tot_pop) %>%
+     mutate(fips=paste0(state,str_pad(county, 3, pad = "0") ) %>% as.numeric()  ) %>%
+     dplyr::select(fips,tot_pop,black_perc,native_perc,hispanic_perc, state_name=stname, county_name=ctyname)
+  
+
+library(readxl)
+g <- read_excel("ruralurbancodes2013.xls") %>% clean_names() %>% dplyr::select(fips,rucc_2013) %>%
+     mutate(fips=fips %>% as.numeric()) 
+dim(g)
+
+h  <- fread("https://raw.githubusercontent.com/JieYingWu/COVID-19_US_County-level_Summaries/master/data/counties.csv") %>% 
+  janitor::clean_names()  %>% 
+  dplyr::select(
+  fips
+  ,percent_of_adults_with_less_than_a_high_school_diploma_2014_18
+  ,percent_of_adults_with_a_bachelors_degree_or_higher_2014_18
+  ,percent_of_adults_completing_some_college_or_associates_degree_2014_18
+  ,percent_of_adults_with_a_high_school_diploma_only_2014_18
+  
+  ,median_household_income_2018
+  ,active_physicians_per_100000_population_2018_aamc
+  ,unemployment_rate_2018
+  ,total_hospitals_2019
+  ,area_in_square_miles_land_area
+  ,density_per_square_mile_of_land_area_population                                                                                                                         
+  ,total_male
+  ,total_female
+  ,total_age0to17
+  ,total_age18to64
+  ,total_age65plus
+  ,total_age85plusr
+  ,wa_male	
+  ,wa_female	
+  ,ba_male
+  ,ba_female
+  ,aa_male
+  ,aa_female
+  ,h_male	
+  ,h_female
+) %>%
+  mutate(population_total=total_male+total_female) %>% dplyr::select(-total_male,-total_female) %>%
+  mutate(total_age0to17_perc=(total_age0to17)/population_total) %>% dplyr::select(-total_age0to17) %>%
+  mutate(total_age18to64_perc=(total_age18to64)/population_total) %>% dplyr::select(-total_age18to64) %>%
+  mutate(total_age65plus_perc=(total_age65plus)/population_total) %>% dplyr::select(-total_age65plus) %>%
+  mutate(total_age85plusr_perc=(total_age85plusr)/population_total) %>% dplyr::select(-total_age85plusr)  %>%
+  dplyr::select(-wa_male, -wa_female,  -ba_male, -ba_female,  -aa_male, -aa_female, -h_male, -h_female)
+
+```
+
+
+```{r}
+
+XYid_all <- lhs %>% 
+            left_join(a) %>%
+            left_join(g) %>%
+            left_join(d) %>%
+            left_join(c) %>%
+            left_join(b) %>%
+            left_join(h) %>%
+            filter(!is.na(fips)) %>%
+            mutate(trump_swing = trump_perc-romney_perc) %>%
+            mutate(fips_state=floor(fips/1000)*1000) %>%
+            left_join(  states_sf %>% as.data.frame() %>% clean_names() %>% mutate(fips_state=as.numeric(statefp)*1000) %>% dplyr::select(fips_state,fold)  ) %>% 
+            mutate_if(is.character, ~gsub('[^ -~]', '', .)) %>%
+            mutate(covid_deaths_percap = deaths/tot_pop ) 
+
+dim(XYid_all) #3282   34
+
+```
+### Summary Statistics
+
+```{r, results='asis'}
+
+
+XYid_all %>% as.data.frame()  %>% #There's some rough strings in county names
+  summarytools::dfSummary( plain.ascii = FALSE,  graph.magnif = 0.75, valid.col = FALSE, #
+                                          #tmp.img.dir = "/mnt/8tb_a/rwd_github_private/cleancovidcounts/docs/temp/",
+                                          style = 'multiline',
+                                          max.distinct.values=10) %>% print( method = 'render')
+
+```
+
+
+### Raw Data
+
+Here are the full raw values for the full dataset.
+
+```{r, results='asis'}
+
+p_load(DT); #install.packages('DT')
+DT::datatable(XYid_all, rownames = FALSE)
+
+```
+
+
+# Fit Models
+
+Define some helper functions that will iterate over groups of variables and save predictions.
+
+```{r, message=F, result=F}
+
+p_load(xgboost)
+p_load(Rfast)
+
+param <<- list(eta = 0.1, objective = "reg:squarederror", eval_metric = "rmse")
+
+fit_a_run <- function(fold_train, fold_valid, fold_test){
+  Y_train <- NULL; Y_valid<-NULL;Y_test<-NULL
+  X_train <- NULL; X_valid<-NULL;X_test<-NULL
+  d_train <- NULL; d_valid <- NULL; d_test <- NULL
+  
+  Y_train <- Yfold_all %>% filter(fold==fold_train) %>% dplyr::select(uptake_max)
+  Y_valid <- Yfold_all %>% filter(fold==fold_valid) %>% dplyr::select(uptake_max)
+  Y_test <-  Yfold_all %>% filter(fold==fold_test) %>% dplyr::select(uptake_max)
+   
+  X_train <- Xfold_all %>% filter(fold==fold_train) %>% dplyr::select(-fold)
+  X_valid <- Xfold_all %>% filter(fold==fold_valid) %>% dplyr::select(-fold)
+  X_test <- Xfold_all %>% filter(fold==fold_test) %>% dplyr::select(-fold)
+  
+  d_train <- xgb.DMatrix( X_train %>% Rfast::data.frame.to_matrix(),  label=Y_train %>% Rfast::data.frame.to_matrix(col.names=T )); 
+  d_valid <- xgb.DMatrix( X_valid %>% Rfast::data.frame.to_matrix(),  label=Y_valid %>% Rfast::data.frame.to_matrix(col.names=T )); 
+  d_test <- xgb.DMatrix( X_test %>% Rfast::data.frame.to_matrix(),  label=Y_test %>% Rfast::data.frame.to_matrix(col.names=T )); 
+
+  watchlist <- list(train = d_train, eval = d_valid)
+  
+  
+  xgboost_model <- NULL
+  xgboost_model <-  xgb.train(params=param,data=d_train, watchlist=watchlist,nrounds=200, early_stopping_rounds=10, verbose = 0)
+  best_stop=xgboost_model$best_iteration
+  
+  Y_train <- Yfold_all %>% filter(fold %in% c(fold_train,fold_valid) ) %>% dplyr::select(uptake_max)
+  X_train <- Xfold_all %>% filter(fold %in% c(fold_train,fold_valid)) %>% dplyr::select(-fold)  
+  d_train <- xgb.DMatrix( X_train %>% Rfast::data.frame.to_matrix(),  label=Y_train %>% Rfast::data.frame.to_matrix(col.names=T )); 
+  
+  xgboost_final <- NULL
+  xgboost_final <-  xgb.train(params=param,data=d_train,nrounds=best_stop)
+  
+  predictions <- Yid_all %>% filter(fold==fold_test) %>% mutate(Y_hat=predict(xgboost_final, d_test)) #
+  return(predictions)
+}
+
+fit_subset_model <- function(model_name='',vars_to_include=c('')) {
+  
+  XYid_all <<- XYid_all %>% arrange(fold, fips)
+  
+  Yid_all <<- XYid_all %>% dplyr::select(state_name,county_name,fips, uptake_max, fold)  
+  Xid_all <<- XYid_all %>% dplyr::select(-uptake_max, -uptake_cdc, -uptake_demchron, -series_complete_18plus_pop_pct, fold) 
+  
+  Yfold_all <<- Yid_all %>% dplyr::select(uptake_max,fold)
+  Xfold_all <<- Xid_all %>% dplyr::select(-fips_state, -fips, -state_name, -county_name)  %>% select(one_of(vars_to_include),fold)
+
+  pred_predict1 <- fit_a_run(3,2,1)
+  pred_predict2 <- fit_a_run(3,1,2)
+  pred_predict3 <- fit_a_run(1,2,3)
+  
+  pred_all <- bind_rows(pred_predict1,pred_predict2,pred_predict3) %>% mutate(residual=Y_hat-uptake_max) %>% mutate(model_name=model_name, vars_to_include=paste(vars_to_include, collapse=";"))
+  #summary(pred__all$residual)
+
+}
+```
+
+We devide features into groups: demography, politics, medical, education, and wealth. We then fit models over unique subsets of groups of features, 31 in total.
+
+```{r}
+                          
+var_sets <- list(
+  'demography'= c('tot_pop','rucc_2013','black_perc',"native_perc","hispanic_perc","density_per_square_mile_of_land_area_population", "total_age0to17_perc","total_age18to64_perc","total_age65plus_perc","total_age85plusr_perc", "area_in_square_miles_land_area","density_per_square_mile_of_land_area_population"),
+  'politics'= c('trump_swing','romney_perc','trump_perc'),
+  'medical' = c('active_physicians_per_100000_population_2018_aamc','total_hospitals_2019','covid_deaths_percap','deaths'),
+  'education' = c("percent_of_adults_with_less_than_a_high_school_diploma_2014_18","percent_of_adults_with_a_bachelors_degree_or_higher_2014_18","percent_of_adults_completing_some_college_or_associates_degree_2014_18",
+                      "percent_of_adults_with_a_high_school_diploma_only_2014_18"),
+  'wealth' = c("unemployment_rate_2018","median_household_income_2018")
+)
+
+all_sets <- c('demography','politics','medical','education','wealth')
+t_all <-c( combn(all_sets, m=5) %>% apply(2, list) %>% unlist(recursive=F),
+ combn(all_sets, m=4) %>% apply(2, list, simplify = T) %>% unlist(recursive=F),
+ combn(all_sets, m=3) %>% apply(2, list, simplify = T) %>% unlist(recursive=F),
+ combn(all_sets, m=2) %>% apply(2, list, simplify = T) %>% unlist(recursive=F),
+ combn(all_sets, m=1) %>% apply(2, list, simplify = T) %>% unlist(recursive=F)
+)
+ 
+#Ok now you can just iterate through this list, create a name for the run, list the vars, and then pass it
+#It's only 31 models
+model_results_list=list()
+
+for(q in t_all){
+  model_name <- sort(paste0(q, collapse="_"))
+  var_list <- var_sets[q] %>% unlist()
+  print(model_name)
+  model_results_list[[model_name]] <- fit_subset_model(model_name=model_name, vars_to_include=var_list)
+}
+
+names(model_results_list)
+
+all_fits <- bind_rows(model_results_list)
+#https://gist.github.com/brshallo/7eed49c743ac165ced2294a70e73e65e
+#' @param rmse Root mean squared error on your sample
+#' @param df Degrees of Freedom in your model. In this case it should be the
+#'   same as the number of observations in your sample.
+rmse_interval <- function(rmse, deg_free, p_lower = 0.05, p_upper = 0.95){
+  tibble(.pred_lower = sqrt(deg_free / qchisq(p_upper, df = deg_free)) * rmse,
+         .pred_upper = sqrt(deg_free / qchisq(p_lower, df = deg_free)) * rmse)
+}
+
+performance <- all_fits %>% group_by(model_name) %>%
+                 summarise(n=n(), 
+                           residual_rmse=sqrt(mean(residual^2)),
+                           residual_mae=mean(abs(residual))
+                           )  %>%
+                 mutate(residual_rmse_05 = rmse_interval(residual_rmse, n )$.pred_lower ) %>%
+                 mutate(residual_rmse_95 = rmse_interval(residual_rmse, n )$.pred_upper )
+```
+
+# Results
+
+Here we show the out of sample performance of each model in terms of mean absolute error and then by root mean squared error (with 95% confidence bounds). The best performing model can reconstruct the true vaccination rate to within less than 1%, while the worst is within 8%. The top three performing models are 0.8%, 1.7%, and 2.2% within the true vaccination rate. The top model is a nearly kitchen sink model, including demographics, education, wealth, and politics, but excluding medical variables. The second best excludes wealth, the third best excludes politics. The same three models are the best performing in terms of RMSE, except the order changes with demography_politics_education coming in first, followed by demography_education, and then demography_politics_education_wealth.
+
+The value added then of political measures over just demographic and education measures in practice is about half a percent. Too small to matter substantively in terms of policy and planning. In combination with wealth, its value added is about 1.4% which might matter, but again would not substantively change one's perception's of a county being a high, middling, or low vaccination uptake population. Demographics and education alone are sufficient to correctly guess the vaccine status of counties. Beyond that we see evidence of either over fitting or underfitting, with additional measures making out of sample predictions worse on average.
+
+```{r}
+p_performance_mae <- 
+            performance %>% 
+              mutate(model_name=fct_reorder(model_name, residual_mae, .desc = T) ) %>%
+              ggplot( aes(x = model_name, y = residual_mae)) + 
+              #geom_pointrange(aes(ymax = residual_rmse_05, ymin = residual_rmse_95), color = "darkblue") +
+              geom_point(aes(x = model_name, y = residual_mae), col="red" ) +
+              #geom_text(aes(label = model_name), nudge_x = 0.15) + 
+              scale_x_discrete("") + 
+              #geom_hline(yintercept = 0, color = "red") + 
+              theme_bw() + 
+              theme(text = element_text(size=10)) +
+              ylab(NULL) + 
+              coord_flip() +
+              ggtitle("Out of Sample MAE by Group of Variables Included")
+```
+
+```{r}
+p_performance_mae
+
+```
+
+
+```{r}
+p_performance <- 
+            performance %>% 
+              mutate(model_name=fct_reorder(model_name, residual_rmse, .desc = T) ) %>%
+              ggplot( aes(x = model_name, y = residual_rmse)) + 
+              geom_pointrange(aes(ymax = residual_rmse_05, ymin = residual_rmse_95), color = "darkblue") +
+              #geom_point(data=performance, aes(x = model_name, y = residual_mae), col="red" ) +
+              #geom_text(aes(label = model_name), nudge_x = 0.15) + 
+              scale_x_discrete("") + 
+              #geom_hline(yintercept = 0, color = "red") + 
+              theme_bw() + 
+              theme(text = element_text(size=10)) +
+              ylab(NULL) + 
+              coord_flip() +
+              ggtitle("Out of Sample RMSE by Group of Variables Included (95% CI)")
+```
+
+```{r}
+p_performance
+
+```
+
+
+
+```{r, eval=F, echo=F}
+p_load(SHAPforxgboost)
+shap_values <- SHAPforxgboost::shap.values(xgb_model = xgboost_fold1 , X_train =  X_train  %>% Rfast::data.frame.to_matrix(col.names=T ) )
+shap_long <- shap.prep(xgb_model = xgboost_fold1, X_train = X_train  %>% Rfast::data.frame.to_matrix(col.names=T )  , top_n=50 ) #it needs column names
+shap.plot.summary(shap_long ) #these take longer and longer so we might want to downsample to a fixe number of points %>% sample_n(100000)
+
+```
+
+
+
+```{r, eval=F, echo=F}
+
+
+
+
+
+id_all$y_log_hat <- fromcdc_byreport_tests_imputed_log
+id_all$y_hat <- exp(id_all$y_log_hat)
+id_all$new_test_results_reported_hat <- pmax(round((id_all$y_hat * id_all$popestimate2019)-1),0, na.rm=T) #it can be rounded to negative 1 so make sure we bound at 0
+id_all$new_test_results_reported_residual <- id_all$new_test_results_reported_hat-id_all$new_test_results_reported
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max.     NA's 
+#-37920.0    -11.0      0.0    -10.8      5.0  39346.0   834626 
+
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max.     NA's 
+#-31857.0    -10.0      0.0    -10.6      5.0  43341.0   834626 
+
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+# -29070      -8       0      -8       5   38141  834626 
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max.     NA's 
+#-37814.0     -7.0      0.0     -4.6      4.0  23519.0   834626 
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max.     NA's 
+#-31615.0     -6.0      0.0     -4.7      4.0  20194.0   834626 
+summary(id_all$new_test_results_reported_residual)
+
+
+#summary(fromcdc_byreport_tests_imputed) #_log %>% exp(
+#summary(cdc_count_data$new_test_results_reported)
+
+
+length(pred1)
+dim(cdc_count_data)
+cdc_count_data <- cdc_count_data %>% arrange(fips_code, date) #just make sure it's sorted one more time
+cdc_count_data$fromcdc_byreport_tests_imputed <- id_all$new_test_results_reported_hat #fromcdc_byreport_tests_imputed # #make sure you exponentiate and subtract back off 1
+#Now since we have tests exactly for some part of the range, we can put in those and then rely on the imputation everywhere else
+#cdc_count_data$fromcdc_byreport_tests_best <- ifelse(!is.na(cdc_count_data$new_test_results_reported), cdc_count_data$new_test_results_reported, id_all$new_test_results_reported_hat)
+
+# 
+# temp <- cdc_count_data %>%
+#   filter(fips_code==48029) %>%
+#   mutate(date=as.Date(date)) %>%
+#   dplyr::select(fips_code,
+#                 date,
+#                 new_test_results_reported_7_day_rolling_average,
+#                 new_test_results_reported,
+#                 fromcdc_byreport_tests_imputed,
+#                 fromcdc_byreport_tests_best,
+#                 #fromcdc_byreport_tests_positive_rmean7b,
+#                 #fromcdc_byreport_tests,
+#                 #fromcdc_byreport_tests_unmeaned,
+#                 #fromcdc_byreport_tests_positive_unmeaned_best,
+#                 #fromcdc_byreport_tests_positive_unmeaned_dumbest_f3
+#                 ) #%>%
+# #install.packages('ggplot2')
+# library(ggplot2)
+# temp %>%   
+#   pivot_longer(cols=-c('fips_code','date')) %>%
+#   ggplot(aes(x=date,y=value, color=name)) + geom_line()
+# 
+# temp <- cdc_count_data %>%
+#   filter(fips_code==06073) %>%
+#     mutate(date=as.Date(date)) %>%
+#   dplyr::select(fips_code,
+#                 date,
+#                 new_test_results_reported_7_day_rolling_average,
+#                 new_test_results_reported,
+#                 fromcdc_byreport_tests_imputed,
+#                 fromcdc_byreport_tests_best,
+#                 ) #%>%
+# temp %>%   
+#   pivot_longer(cols=-c('fips_code','date')) %>%
+#   ggplot(aes(x=date,y=value, color=name)) + geom_line()
+
+
+#Examine the shap of one of the folds
+# p_load(SHAPforxgboost)
+# temp <- x_train %>% Rfast::data.frame.to_matrix()
+# colnames(temp) <- colnames(x_train)
+# shap_values <- SHAPforxgboost::shap.values(xgb_model = xgboost_model_fold1 , X_train =  temp )
+# shap_long <- shap.prep(xgb_model = xgboost_model_fold1, X_train = temp  , top_n=50 ) #it needs column names
+# shap.plot.summary(shap_long %>% sample_n(100000)) #these take longer and longer so we might want to downsample to a fixe number of points
+
+
+
+```
+
+
+
