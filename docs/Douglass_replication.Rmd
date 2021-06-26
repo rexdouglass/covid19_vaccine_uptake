@@ -488,15 +488,15 @@ states_sf  %>%
 a <- fread("https://raw.githubusercontent.com/nytimes/covid-19-data/master/us-counties.csv") %>%
      filter(date=="2020-11-04") %>% dplyr::select(fips, deaths)
 
-b <- fread("2012pres.csv") %>% clean_names() %>%
+b <- fread("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/2012pres.csv") %>% clean_names() %>%
      mutate(romney_perc=100*willard_mitt_romney / (barack_h_obama + willard_mitt_romney)) %>%
     dplyr::select(fips,romney_perc)
 
-c <- fread("2020pres.csv") %>% clean_names() %>% 
+c <- fread("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/2020pres.csv") %>% clean_names() %>% 
      mutate(trump_perc=100*donald_j_trump / (joseph_r_biden_jr + donald_j_trump)) %>%
      dplyr::select(fips,trump_perc)
 
-d <- readRDS("cc-est2019-alldata.Rds") %>% clean_names() %>%
+d <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/cc-est2019-alldata.Rds") %>% clean_names() %>%
      filter(year==12, agegrp==0) %>%
      mutate(black_perc = 100*(bac_male + bac_female)/tot_pop) %>%
      mutate(native_perc = 100*(iac_male + iac_female)/tot_pop) %>%
@@ -506,7 +506,7 @@ d <- readRDS("cc-est2019-alldata.Rds") %>% clean_names() %>%
   
 
 library(readxl)
-g <- read_excel("ruralurbancodes2013.xls") %>% clean_names() %>% dplyr::select(fips,rucc_2013) %>%
+g <- read_excel("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/ruralurbancodes2013.xls") %>% clean_names() %>% dplyr::select(fips,rucc_2013) %>%
      mutate(fips=fips %>% as.numeric()) 
 dim(g)
 
