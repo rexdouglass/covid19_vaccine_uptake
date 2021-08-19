@@ -1,0 +1,1814 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+
+library(pacman)
+p_load(tidyverse)
+Sys.setenv(LD_LIBRARY_PATH="/usr/lib/cuda:/usr/lib/cuda/lib64:/usr/lib/cuda/include:" %>% paste0(Sys.getenv("LD_LIBRARY_PATH") ) )
+Sys.getenv("LD_LIBRARY_PATH")
+
+#rm(list = ls())
+#.rs.restartR()
+gc()
+fromscratch=F
+library(reticulate)
+#conda_list()
+use_condaenv("py3.6", required = TRUE)
+
+library(tensorflow)
+library(keras)
+
+#install_tensorflow(
+#  method = c("auto"),
+#  conda = "auto",
+#  version = "default",
+#  envname = "py3.6",
+#  extra_packages = NULL,
+#  restart_session = TRUE,
+#  conda_python_version = "3.7",
+#)
+
+knitr::opts_chunk$set(fig.width = 8, fig.height = 8, message=F, warning=F, echo=F, results=F)
+
+#Library Loads
+
+p_load(janitor)
+p_load(tidylog)
+p_load(stringr)
+p_load(ggdag)
+p_load(data.table)
+p_load(sf)
+p_load(glue)
+p_load(scales)
+options(tigris_use_cache = TRUE)
+
+```
+# Load data
+
+```{r}
+yid_train <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/yid_train.Rds")
+x_train <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train.Rds")
+Folds1 <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/Folds1.Rds")
+xy_train <- cbind(yid_train[,'y'],x_train) %>% as.data.frame()
+dim(xy_train)
+x_train_scaled <- x_train %>% scale() 
+
+summary(yid_train$y_share14plus)
+#x_train[,'y_share14plus']
+#x_train[,'y']
+
+```
+
+
+
+# XGBOOST
+
+```{r}
+
+library(xgboost)
+pars_best <- list( 
+    #booster = "dart",
+    eta = 0.3 #getBestPars(optObj)$eta #they picked a very low learning rate #lower learning rate for the final one
+    , max_depth = 6 #grid_result_best$max_depth
+    #, min_child_weight = 15 #grid_result_best$min_child_weight
+    , subsample = 1 #grid_result_best$subsample
+    , objective = "reg:logistic" #"reg:squarederror" #"reg:logistic" #
+    , eval_metric = "rmse"
+    #, subsample=0.66
+    #, colsample_bytree=0.05
+    #,gamma=0.5 #0.5 best so far
+  )
+
+xgboost_unpruned <- xgb.cv(params = pars_best, data = xgb.DMatrix( x_train  %>% Rfast::data.frame.to_matrix(col.names=T) , #%>% scale()
+                                                                   label=yid_train[,'y_share14plus']  %>% Rfast::data.frame.to_matrix(col.names=T)) , nround = 3000, 
+                   folds = Folds1,
+                   #nfold=3,
+                   prediction = T, showsd = F, early_stopping_rounds = 50, maximize = F, verbose = 1,nthread=64,
+                   callbacks=list(cb.cv.predict(save_models = TRUE)) ,
+                   base_score=mean(yid_train[,'y_share14plus']$y_share14plus) #if you give it a mean it'll do ok, it loses that sense of scale when you scale the whole rhs
+                   ) 
+y_all <- yid_train[,'y_share14plus']$y_share14plus
+#print(summary(abs(y_all-xgboost_unpruned$pred)/y_all)) #xgboost performs way worse?
+summary(abs(y_all-xgboost_unpruned$pred))
+#   Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.000014 0.024357 0.049939 0.063793 0.087115 0.449191 
+plot(y_all, xgboost_unpruned$pred)
+abline(coef = c(0,1)) #
+
+importance1 <- xgb.importance(model = xgboost_unpruned$models[[1]])
+importance2 <- xgb.importance(model = xgboost_unpruned$models[[2]])
+importance3 <- xgb.importance(model = xgboost_unpruned$models[[3]])
+importance4 <- xgb.importance(model = xgboost_unpruned$models[[4]])
+importance5 <- xgb.importance(model = xgboost_unpruned$models[[5]])
+
+importance1 <- importance1 %>% mutate(Feature = Feature %>% as.numeric() ) %>%  mutate(var = colnames(x_train)[Feature+1])
+importance2 <- importance2 %>% mutate(Feature = Feature %>% as.numeric() ) %>%  mutate(var = colnames(x_train)[Feature+1])
+importance3 <- importance3 %>% mutate(Feature = Feature %>% as.numeric() ) %>%  mutate(var = colnames(x_train)[Feature+1])
+importance4 <- importance4 %>% mutate(Feature = Feature %>% as.numeric() ) %>%  mutate(var = colnames(x_train)[Feature+1])
+importance5 <- importance5 %>% mutate(Feature = Feature %>% as.numeric() ) %>%  mutate(var = colnames(x_train)[Feature+1])
+
+vars_keep <- c(importance1$var,importance2$var,importance3$var,importance4$var,importance5$var) %>% unique()
+print(vars_keep %>% length())
+
+```
+
+
+# XGBOOST Pruned
+
+```{r}
+
+for(i in 1:5){
+  print(length(vars_keep)) #9156
+  x_train_pruned <- x_train[,vars_keep]
+  xgboost_pruned <- xgb.cv(params = pars_best, data = xgb.DMatrix( x_train_pruned  %>% Rfast::data.frame.to_matrix(col.names=T) , #%>% scale()
+                                                                     label=yid_train[,'y_share14plus']  %>% Rfast::data.frame.to_matrix(col.names=T)) , nround = 3000, 
+                     folds = Folds1,
+                     #nfold=3,
+                     prediction = T, showsd = F, early_stopping_rounds = 50, maximize = F, verbose = 0,nthread=64,
+                     callbacks=list(cb.cv.predict(save_models = TRUE)) ,
+                     base_score=mean(yid_train[,'y_share14plus']$y_share14plus) #if you give it a mean it'll do ok, it loses that sense of scale when you scale the whole rhs
+                     ) 
+  y_all <- yid_train[,'y_share14plus']$y_share14plus
+  #print(summary(abs(y_all-xgboost_unpruned$pred)/y_all)) #xgboost performs way worse?
+  summary(abs(y_all-xgboost_pruned$pred))
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0000303 0.0230036 0.0494154 0.0615254 0.0848126 0.3886810 
+  plot(y_all, xgboost_pruned$pred)
+  abline(coef = c(0,1)) #
+  
+  importance1 <- xgb.importance(model = xgboost_pruned$models[[1]])
+  importance2 <- xgb.importance(model = xgboost_pruned$models[[2]])
+  importance3 <- xgb.importance(model = xgboost_pruned$models[[3]])
+  importance4 <- xgb.importance(model = xgboost_pruned$models[[4]])
+  importance5 <- xgb.importance(model = xgboost_pruned$models[[5]])
+  
+  importance1 <- importance1 %>% mutate(Feature = Feature %>% as.numeric() ) %>%  mutate(var = colnames(x_train_pruned)[Feature+1])
+  importance2 <- importance2 %>% mutate(Feature = Feature %>% as.numeric() ) %>%  mutate(var = colnames(x_train_pruned)[Feature+1])
+  importance3 <- importance3 %>% mutate(Feature = Feature %>% as.numeric() ) %>%  mutate(var = colnames(x_train_pruned)[Feature+1])
+  importance4 <- importance4 %>% mutate(Feature = Feature %>% as.numeric() ) %>%  mutate(var = colnames(x_train_pruned)[Feature+1])
+  importance5 <- importance5 %>% mutate(Feature = Feature %>% as.numeric() ) %>%  mutate(var = colnames(x_train_pruned)[Feature+1])
+  
+  vars_keep <- c(importance1$var,importance2$var,importance3$var,importance4$var,importance5$var) %>% unique()
+  #print(vars_keep %>% length())
+
+}
+
+
+```
+
+
+
+# XGBOOST
+
+```{r}
+
+library(xgboost)
+pars_best <- list( 
+    booster = "gbtree",
+    eta = 0.1 #getBestPars(optObj)$eta #they picked a very low learning rate #lower learning rate for the final one
+    , max_depth = 6 #grid_result_best$max_depth
+    #, min_child_weight = 15 #grid_result_best$min_child_weight
+    , subsample = 1 #grid_result_best$subsample
+    , objective = "reg:squarederror" #"reg:logistic" # #"reg:logistic" #
+    , eval_metric = "rmse"
+    #, subsample=0.66
+    #, colsample_bytree=0.05
+    #,gamma=0.5 #0.5 best so far
+  )
+
+xgboost_unpruned <- xgb.cv(params = pars_best, data = xgb.DMatrix( x_train  %>% Rfast::data.frame.to_matrix(col.names=T) , #%>% scale()
+                                                                   label=yid_train[,'y']  %>% Rfast::data.frame.to_matrix(col.names=T)) , nround = 3000, 
+                   folds = Folds1,
+                   #nfold=3,
+                   prediction = T, showsd = F, early_stopping_rounds = 50, maximize = F, verbose = 1,nthread=64,
+                   callbacks=list(cb.cv.predict(save_models = TRUE)) ,
+                   base_score=mean(yid_train[,'y']$y) #if you give it a mean it'll do ok, it loses that sense of scale when you scale the whole rhs
+                   ) 
+y_all <- yid_train[,'y']$y
+#print(summary(abs(y_all-xgboost_unpruned$pred)/y_all)) #xgboost performs way worse?
+summary(abs(y_all-xgboost_unpruned$pred))
+
+plot(y_all, xgboost_unpruned$pred)
+abline(coef = c(0,1)) #
+
+importance <- xgb.importance(model = xgboost_unpruned$models[[1]])
+dim(importance)
+
+importance <- importance %>% mutate(Feature = Feature %>% as.numeric() ) %>%  mutate(var = colnames(x_train)[Feature+1])
+
+
+
+```
+
+
+
+# Appendix 3 Feature Preperation and Selection
+
+We have 10s of thousands of possible features. Many of them are redundant, distractions, or otherwise should be excluded. Pruning them is important because many of our tools choke on too many features, even those designed to handle them. 
+
+Our first main idea is to fit a deep neural network with increasing regularization. This will be able to find interactions, combine information spread across multiple features, allocate weight across them by their value. We can also directly optimize our target mean absolute percent error.
+
+We fit several high performing models and record which features receive near-zero weight at the initial layer. We then prune those features dramatically reducing the number of columns and making possible more sophisticated methods line shap.
+
+
+
+## Cancel Out
+
+```{r}
+
+library(tensorflow)
+library(keras)
+
+
+#Ok don't fucking change anything
+#by far best scores here
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.000096 0.051660 0.117626 0.149758 0.208357 1.555295 
+#l1= 0.000001
+#lambda_1=0.002,  lambda_2=0.001
+#sigmoid transformation
+#beta 0
+#random uniofrm initializer as described in the paper
+#https://github.com/unnir/CancelOut
+#https://rpubs.com/FJRubio/softmax
+#The softmax transform means that it normalizes them all to sum to 1. So the larger the value the larger relative share of the nonshrinkage weight it gets
+cancel_out_rex <- Layer(
+  classname = "cancel_out", 
+  initialize = function(input_dim, units, lambda_1=0.002,  lambda_2=0.001, beta_1=0.9, beta_2=0.999 ) {
+    super()$`__init__`()
+    
+    self$lambda_1 = lambda_1
+    self$lambda_2 = lambda_2
+
+    self$w <- self$add_weight(
+      shape = shape( units, input_dim),
+      initializer = tf$random_uniform_initializer(minval=-1/sqrt(input_dim) + beta_1, maxval=1/sqrt(input_dim) + beta_2 ) ,#"ones", #as described in the paper
+      trainable = TRUE
+    )
+  },
+  call = function(inputs, ...) {
+    #This might be more interpretable but it's much slower to converge
+    transformed= tf$sigmoid(self$w) #-0.5  #Rex added subtracting 0.5 so that things driven to 0.5 are driven to zero instead
+    #transformed_normed1 = transformed - tf$math$reduce_min(transformed) #should be
+    #transformed_normed = transformed_normed1 / tf$math$reduce_max(transformed_normed1)
+    
+    #transformed_normed1 = transformed - tf$math$reduce_min(transformed) + 0.000001 #have to had a small amount so we don't divide by zero
+    #transformed_normed = transformed_normed1 / tf$math$reduce_max(transformed_normed1) #Rex added this so it always leaves the top variable unmolested weight 1
+    self$add_loss( self$lambda_1 * tf$norm(self$w, ord=1) + self$lambda_2 * tf$norm(self$w, ord=2)) #This is saying pull more of them back to zero
+    return(
+
+      tf$math$multiply(inputs, transformed )
+    )
+  }
+)
+
+layer <- cancel_out_rex(units = 1L, input_dim=512L)
+x <- tf$ones(shape = list(32L, 1L,512L)) #make sure you add Ls
+x2 <- tf$ones(shape = list(27L, 1L,512L)) #make sure you add Ls
+#layer(x)
+dim(x)
+dim(layer(x))
+dim(layer(x2))
+dim(layer$weights[[1]])
+
+```
+
+
+
+
+## liao_et_al
+
+Batch-Wise Attenuation
+and Feature Mask Normalization
+https://arxiv.org/pdf/2010.13631.pdf
+
+```{r}
+
+library(tensorflow)
+library(keras)
+
+liao_et_al <- Layer(
+  classname = "cancel_out", 
+  initialize = function(input_dim, units) {
+    super()$`__init__`()
+
+    self$w1 <- self$add_weight(
+      shape = shape( units, input_dim),
+      #initializer = tf$random_uniform_initializer(minval=-1/sqrt(input_dim) + beta_1, maxval=1/sqrt(input_dim) + beta_2 ) ,#"ones", #as described in the paper
+      trainable = TRUE
+    )
+
+    self$w2 <- self$add_weight(
+      shape = shape( units, input_dim),
+      #initializer = tf$random_uniform_initializer(minval=-1/sqrt(input_dim) + beta_1, maxval=1/sqrt(input_dim) + beta_2 ) ,#"ones", #as described in the paper
+      trainable = TRUE
+    )
+  
+        
+  },
+  call = function(inputs, ...) {
+    
+    
+    transformed1= tf$relu(inputs * self$w1)
+    transformed1= tf$relu(transformed1 * self$w2)
+    
+    return(
+
+      tf$math$multiply(inputs, transformed )
+    )
+  }
+)
+
+layer <- cancel_out_rex(units = 1L, input_dim=512L)
+x <- tf$ones(shape = list(32L, 1L,512L)) #make sure you add Ls
+x2 <- tf$ones(shape = list(27L, 1L,512L)) #make sure you add Ls
+#layer(x)
+dim(x)
+dim(layer(x))
+dim(layer(x2))
+dim(layer$weights[[1]])
+
+```
+
+
+
+# Biglasso
+
+Predicting on Fold 1, MAPE=0.358673, chooses 45 features
+
+```{r}
+
+#devtools::install_github("YaohuiZeng/biglasso")
+library(biglasso)
+#memory of this is now getting pretty wild, 150gb
+fit.lasso <- cv.biglasso(X= x_train_scaled[yid_train$fold!=1,] %>% as.big.matrix(),
+                      y=yid_train[yid_train$fold!=1,'y_share10plus'] %>% unlist() %>% as.vector() , 
+                      family = 'gaussian', ncores=16, #can't use all cores because the memory uses explodes
+                      penalty="lasso",
+                      #eval.metric= "MAPE",
+                      cv.ind= yid_train[yid_train$fold!=1,'fold'] ,
+                      nfolds=6)
+summary(fit.lasso)
+plot(fit.lasso, type = 'all')
+coef <- coef(fit.lasso, lambda=fit.lasso$lambda.min, drop = TRUE)
+coef_df <- as.data.frame(coef %>% as.matrix()) %>% setNames("coef") %>% filter(coef!=0) %>% mutate(coef=coef %>% round(5))
+coef[which(coef != 0)]
+coef_df %>% View()
+
+y_hat_lasso <- predict(fit.lasso, x_train_scaled[yid_train$fold==1,]  %>% as.big.matrix(), type = "response", lambda=fit.lasso$lambda.min)[,1]
+y <- yid_train[yid_train$fold==1,'y_share10plus']$y_share10plus
+print("Current performance")
+#print(summary(abs(y-y_hat_lasso)/y))
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.000776 0.102551 0.242087 0.358673 0.470731 4.924635
+summary(abs(y-y_hat_lasso)*100) #
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# 0.001007  2.043938  4.186521  5.401807  7.564966 29.341698 
+ 
+plot(y, y_hat_lasso)
+abline(coef = c(0,1)) #it's weirdly depressed, I think because it's overfitting on the small
+
+```
+
+# LightGBM
+
+```{r}
+
+library(lightgbm)
+params <- list(objective = "regression" # "mape"
+               ,metric = "mape"
+               ,linear_tree=T
+               ,num_threads=64
+               ,learning_rate=0.1
+               )
+lgb_unpruned <- lgb.cv(
+            params = params
+          , data = lgb.Dataset( x_train_scaled %>% Rfast::data.frame.to_matrix(col.names=F), #it might be throwing an error bc the column names are too long
+                                label = yid_train[,'y'] %>%  Rfast::data.frame.to_matrix(col.names=T) )
+          , nrounds = 3000L
+          ,early_stopping_rounds=30L
+          #, nfold = 5L
+          , min_data = 1L
+          , learning_rate = 0.1
+          ,folds = Folds1,
+)
+#https://github.com/microsoft/LightGBM/issues/283
+get_lgbm_cv_preds <- function(cv){
+        rows <- length(cv$boosters[[1]]$booster$.__enclos_env__$private$valid_sets[[1]]$.__enclos_env__$private$used_indices)+length(cv$boosters[[1]]$booster$.__enclos_env__$private$train_set$.__enclos_env__$private$used_indices)
+        preds <- numeric(rows)
+        for(i in 1:length(cv$boosters)){
+                preds[
+                cv$boosters[[i]]$booster$.__enclos_env__$private$valid_sets[[1]]$.__enclos_env__$private$used_indices] <-
+                cv$boosters[[i]]$booster$.__enclos_env__$private$inner_predict(2)
+        }
+        return(preds)
+}
+
+#Was generally more accurate but took way way longer
+summary( (get_lgbm_cv_preds(lgb_unpruned)  /yid_train[,'y']$y)-1) #median of 1% off  #This says -0.0333 
+
+#also the plot looks all over the place, I find the xgboost one more pleasing, so there's that.
+plot( y_train$y, get_lgbm_cv_preds(lgb_unpruned)) #basically really good until t gets out in the weeds and then goes hetero
+abline(coef = c(0,1))
+
+
+```
+
+
+Fit to raw data no pruning
+
+```{r}
+
+
+l1= 0.1^6 #6 looks like the winner
+model_unpruned = keras_model_sequential() %>% 
+                 #layer_batch_normalization() %>%
+                 #layer_dropout(rate=0.5) %>%
+                 #layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+                 layer_batch_normalization() %>%
+                 layer_dropout(rate=0.5) %>%
+                 layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+                 layer_batch_normalization() %>%
+                 layer_dropout(rate=0.5) %>%
+                 layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+                 layer_batch_normalization() %>%
+                 layer_dropout(rate=0.5) %>%
+                 layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+                 layer_dense(units=1, activation="linear") #we don't regularize the last layer. You can put as big a linear weight as you need on that synthetic feature
+
+model_unpruned %>% compile( #recompile it
+       loss = "mse", #loss_mean_absolute_percentage_error", #mse", #loss_mean_absolute_percentage_error, #"mse" ,#loss_mean_absolute_percentage_error, #"mse",
+       optimizer =  optimizer_adam(lr = 0.01), #starting at 0.01 really does seem to matter
+       metrics = metric_mean_absolute_percentage_error #metric_mean_pred #list("metric_mean_squared_error")
+)
+
+fit_unpruned <- model_unpruned %>% 
+          fit(x=x_train_scaled[yid_train$fold!=1,] %>% Rfast::data.frame.to_matrix(col.names=T),
+              y=yid_train[yid_train$fold!=1,'y_share10plus'] %>% Rfast::data.frame.to_matrix(col.names=T),
+              epochs = 3000,
+              verbose = 1,
+              batch_size=2048, #large batch sizes really helps
+              validation_data = list(x_train_scaled[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T), 
+                                     yid_train[yid_train$fold==1,'y_share10plus'] %>% Rfast::data.frame.to_matrix(col.names=T)
+                                     ),
+              view_metrics=F, #still crashes rstudio y
+              callbacks= list(callback_early_stopping(monitor = "val_loss", patience=2000,
+                                                      restore_best_weights=T),
+                              callback_reduce_lr_on_plateau(monitor = "val_loss", factor = 0.1, patience=30, verbose=T, min_lr=10^-10, cooldown=100) #if no improvement
+                              )
+)
+y_hat <- predict(model_unpruned, x_train_scaled[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T) ) %>% as.vector() 
+y <- yid_train[yid_train$fold==1,'y_share10plus']$y_share10plus
+#print(summary(abs(y-y_hat)/y))
+summary(abs(y-y_hat))
+plot(y, y_hat)
+abline(coef = c(0,1)) #
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.000804 0.083356 0.171298 0.240108 0.295693 3.826277 #you have to exclude cdc, cdc is garbage
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max.
+#0.0000644 0.0633627 0.1324338 0.1597690 0.2270694 0.9376981 #once you exclude everything make sense again
+
+
+
+
+```
+
+
+
+# Estimate Importance Liao et al
+
+```{r}
+
+
+p_load(tictoc)
+p_load(keras)
+weight_list = list()
+
+x_train_scaled <- x_train %>% scale() 
+variables_to_keep=colnames(x_train_scaled)
+    
+tic()
+x_train_scaled_pruned=x_train_scaled[,variables_to_keep]
+print(paste("Keeping ", length(variables_to_keep), " variables"))
+#you've got to rebuild the whole thing so it grabs the col count from input correctly
+l1= 0.1^6 #put a small l1 weight on the rest just so it doesn't try to sneak around the first one, Try 5,6,7 depending on what layer options.
+input <- layer_input(shape=ncol(x_train))
+liao_et_al <- input %>% 
+              #layer_batch_normalization() %>%
+              #layer_dropout(rate=0.5) %>%
+              layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(0,0)) %>%
+              #layer_batch_normalization() %>%
+              #layer_dropout(rate=0.5) %>%
+              layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(0,0)) %>%
+              layer_dense(units=ncol(x_train), activation="hard_sigmoid" , kernel_regularizer = regularizer_l1_l2(0,0)) %>%
+              k_mean(axis = 1, keepdims = T) #%>%
+              #activation_hard_sigmoid()
+  
+
+output = layer_multiply( list(input %>% layer_batch_normalization() , #So we peform batch norm and dropout on the input  
+                              liao_et_al) #And then we destroy some
+                         ) %>%
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_batch_normalization() %>%
+         layer_dropout(rate=0.5) %>%
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_batch_normalization() %>%
+         layer_dropout(rate=0.5) %>%
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_batch_normalization() %>%
+         layer_dropout(rate=0.5) %>%
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_batch_normalization() %>%
+         layer_dropout(rate=0.5) %>%
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_dense(units=1, activation="linear") #we don't regularize the last layer. You can put as big a linear weight as you need on that synthetic feature
+
+model <- keras_model(inputs = input, outputs = output)
+importances <- keras_model(inputs = input, outputs = liao_et_al)
+
+model %>% compile( #recompile it
+   loss = "mse", #loss_mean_absolute_percentage_error, #"mse", #, #"mse", #, #"mse" ,#loss_mean_absolute_percentage_error, #"mse",
+   optimizer =  optimizer_adam(lr = 0.01) , #optimizer_sgd(0.1) , #optimizer_rmsprop(0.01), #optimizer_adam(lr = 0.01), #starting at 0.01 really does seem to matter
+   metrics = metric_mean_absolute_error, #metric_mean_absolute_percentage_error #metric_mean_pred #list("metric_mean_squared_error")
+)
+#ok by far gelu is the best
+   
+fit1 <- model %>% 
+          fit(x=x_train_scaled_pruned[yid_train$fold!=1,] %>% Rfast::data.frame.to_matrix(col.names=T),
+              y=yid_train[yid_train$fold!=1,'y_share10plus'] %>% Rfast::data.frame.to_matrix(col.names=T),
+              epochs = 10000,
+              verbose = 1,
+              batch_size=2048,
+              validation_data = list(x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T), 
+                                     yid_train[yid_train$fold==1,'y_share10plus'] %>% Rfast::data.frame.to_matrix(col.names=T)
+                                     ),
+              view_metrics=F, #still crashes rstudio y
+              callbacks= list(callback_early_stopping(monitor = "val_loss", patience=100,
+                                                      restore_best_weights=T),
+                              callback_reduce_lr_on_plateau(monitor = "val_loss", factor = 0.1, patience=50, verbose=T, min_lr=10^-6, cooldown=100) #if no improvement #This schedule turns out to be really important
+                              )
+)
+
+y_hat <- predict(model, x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T) ) %>% as.vector() # in this run it seems to have done a good job. the mean and median are bigger but the distribution is way closer
+y <- yid_train[yid_train$fold==1,'y_share10plus']$y_share10plus
+print("Current performance")
+#print(summary(abs(y-y_hat)/y))
+summary(abs(y*100-y_hat*100))
+plot(y, y_hat)
+abline(coef = c(0,1)) #it's weirdly depressed, I think because it's overfitting on the small
+
+importances_hat <- predict(importances,  x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T), batch_size=sum(yid_train$fold==1))
+dim(importances_hat)
+
+importances_hat_df <- data.frame(imp=importances_hat[1,] %>% round(10), vars=colnames(x_train) ) 
+
+hist(importances_hat_df$imp)
+table(importances_hat_df$imp>.5)
+
+write.csv(importances_hat_df %>% arrange(desc(imp)),
+          "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/importances_hat_df.csv")
+
+
+```
+
+#### Train a model on top k
+
+
+```{r}
+
+
+x_train_scaled <- x_train %>% scale() 
+variables_to_keep=importances_hat_df %>% arrange(desc(imp)) %>% filter(row_number()<=100) %>% pull(vars)
+length(variables_to_keep) #100
+    
+tic()
+x_train_scaled_pruned=x_train_scaled[,variables_to_keep]
+print(paste("Keeping ", length(variables_to_keep), " variables"))
+#you've got to rebuild the whole thing so it grabs the col count from input correctly
+l1= 0.1^5 #put a small l1 weight on the rest just so it doesn't try to sneak around the first one, Try 5,6,7 depending on what layer options.
+lambda_1=0.2
+lambda_2=0.001
+
+input <- layer_input(shape=ncol(x_train_scaled_pruned))
+output = input %>%
+         layer_batch_normalization() %>%
+         #layer_dropout(rate=0.5) %>% #
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_batch_normalization() %>%
+         layer_dropout(rate=0.5) %>%
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_batch_normalization() %>%
+         layer_dropout(rate=0.5) %>%
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_batch_normalization() %>%
+         layer_dropout(rate=0.5) %>%
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_dense(units=1, activation="linear") #we don't regularize the last layer. You can put as big a linear weight as you need on that synthetic feature
+
+model_pruned <- keras_model(inputs = input, outputs = output)
+
+model_pruned %>% compile( #recompile it
+   loss = "mse", #loss_mean_absolute_percentage_error, #"mse", #, #"mse", #, #"mse" ,#loss_mean_absolute_percentage_error, #"mse",
+   optimizer =  optimizer_adam(lr = 0.01) , #optimizer_sgd(0.1) , #optimizer_rmsprop(0.01), #optimizer_adam(lr = 0.01), #starting at 0.01 really does seem to matter
+   metrics = metric_mean_absolute_error, #metric_mean_absolute_percentage_error #metric_mean_pred #list("metric_mean_squared_error")
+)
+#ok by far gelu is the best
+   
+fit1_pruned <- model_pruned %>% 
+          fit(x=x_train_scaled_pruned[yid_train$fold!=1,] %>% Rfast::data.frame.to_matrix(col.names=T),
+              y=yid_train[yid_train$fold!=1,'y_share10plus'] %>% Rfast::data.frame.to_matrix(col.names=T),
+              epochs = 16000,
+              verbose = 1,
+              batch_size=2048,
+              validation_data = list(x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T), 
+                                     yid_train[yid_train$fold==1,'y_share10plus'] %>% Rfast::data.frame.to_matrix(col.names=T)
+                                     ),
+              view_metrics=F, #still crashes rstudio y
+              callbacks= list(callback_early_stopping(monitor = "val_loss", patience=1000,
+                                                      restore_best_weights=T),
+                              callback_reduce_lr_on_plateau(monitor = "val_loss", factor = 0.1, patience=200, verbose=T, min_lr=10^-8, cooldown=100) #if no improvement #This schedule turns out to be really important
+                              )
+)
+
+y_hat <- predict(model_pruned, x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T) ) %>% as.vector() # in this run it seems to have done a good job. the mean and median are bigger but the distribution is way closer
+y <- yid_train[yid_train$fold==1,'y_share10plus']$y_share10plus
+print("Current performance")
+#print(summary(abs(y-y_hat)/y))
+summary(abs(y*100-y_hat*100))
+plot(y, y_hat)
+abline(coef = c(0,1)) #it's weirdly depressed, I think because it's overfitting on the small
+
+
+```
+
+
+
+
+
+# Estimate Importance Upping the L1 cancel out
+
+```{r}
+
+
+p_load(tictoc)
+p_load(keras)
+weight_list = list()
+
+x_train_scaled <- x_train %>% scale() 
+variables_to_keep=colnames(x_train_scaled)
+    
+tic()
+x_train_scaled_pruned=x_train_scaled[,variables_to_keep]
+print(paste("Keeping ", length(variables_to_keep), " variables"))
+#you've got to rebuild the whole thing so it grabs the col count from input correctly
+l1= 0.1^6 #put a small l1 weight on the rest just so it doesn't try to sneak around the first one, Try 5,6,7 depending on what layer options.
+lambda_1=0.2
+lambda_2=0.001
+model = keras_model_sequential() %>% 
+         #layer_linear_rex(units=1,input_dim=ncol(x_train_scaled_pruned)) %>%
+         #layer_activity_regularization(l1=0.01) %>%
+         layer_batch_normalization() %>%
+         layer_dropout(rate=0.5) %>%
+         cancel_out_rex(units=1,input_dim=ncol(x_train_scaled_pruned)) %>%
+         #layer_batch_normalization() %>% #dropout after the cancel out makes it worse
+         #layer_dropout(rate=0.5) %>%
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_batch_normalization() %>%
+         layer_dropout(rate=0.5) %>%
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_batch_normalization() %>%
+         layer_dropout(rate=0.5) %>%
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_batch_normalization() %>%
+         layer_dropout(rate=0.5) %>%
+         layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+         layer_dense(units=1, activation="linear") #we don't regularize the last layer. You can put as big a linear weight as you need on that synthetic feature
+
+model %>% compile( #recompile it
+   loss = "mse", #loss_mean_absolute_percentage_error, #"mse", #, #"mse", #, #"mse" ,#loss_mean_absolute_percentage_error, #"mse",
+   optimizer =  optimizer_adam(lr = 0.01) , #optimizer_sgd(0.1) , #optimizer_rmsprop(0.01), #optimizer_adam(lr = 0.01), #starting at 0.01 really does seem to matter
+   metrics = metric_mean_absolute_error, #metric_mean_absolute_percentage_error #metric_mean_pred #list("metric_mean_squared_error")
+)
+#ok by far gelu is the best
+   
+fit1 <- model %>% 
+          fit(x=x_train_scaled_pruned[yid_train$fold!=1,] %>% Rfast::data.frame.to_matrix(col.names=T),
+              y=yid_train[yid_train$fold!=1,'y_share10plus'] %>% Rfast::data.frame.to_matrix(col.names=T),
+              epochs = 6000,
+              verbose = 1,
+              batch_size=2048,
+              validation_data = list(x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T), 
+                                     yid_train[yid_train$fold==1,'y_share10plus'] %>% Rfast::data.frame.to_matrix(col.names=T)
+                                     ),
+              view_metrics=F, #still crashes rstudio y
+              callbacks= list(callback_early_stopping(monitor = "val_loss", patience=500,
+                                                      restore_best_weights=T),
+                              callback_reduce_lr_on_plateau(monitor = "val_loss", factor = 0.1, patience=50, verbose=T, min_lr=10^-6, cooldown=100) #if no improvement #This schedule turns out to be really important
+                              )
+)
+
+y_hat <- predict(model, x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T) ) %>% as.vector() # in this run it seems to have done a good job. the mean and median are bigger but the distribution is way closer
+y <- yid_train[yid_train$fold==1,'y_share10plus']$y_share10plus
+print("Current performance")
+#print(summary(abs(y-y_hat)/y))
+summary(abs(y*100-y_hat*100))
+plot(y, y_hat)
+abline(coef = c(0,1)) #it's weirdly depressed, I think because it's overfitting on the small
+
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000341 0.0460976 0.0965453 0.1236754 0.1652749 1.8510601
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000341 0.0460976 0.0965453 0.1236754 0.1652749 1.8510601 
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000534 0.0428419 0.0966694 0.1237509 0.1698306 1.6036554 
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0002518 0.0440392 0.1003353 0.1281984 0.1726847 1.8230802
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0002217 0.0464208 0.0977703 0.1238769 0.1640733 1.7121929
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000152 0.0433164 0.0938452 0.1230484 0.1679043 1.6504963 #This is my best run ever l1= 0.1^7 with 30 cooldown
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0001183 0.0460112 0.0989861 0.1291034 0.1726775 2.0228230 #Just replicating the above, still hovering about 1.29
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000841 0.0457669 0.1011520 0.1206759 0.1639241 0.8994766 #dropout just before cancel out leads to the best results, but not after
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000552 0.0468296 0.0985065 0.1236026 0.1710059 1.0183228 
+#   Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.000119 0.047612 0.098410 0.123263 0.172702 1.216292 #batch 2048
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0001742 0.0443939 0.0935183 0.1184344 0.1611034 1.0233905  #switching to selu best so
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000159 0.0447075 0.0943467 0.1204159 0.1609498 1.2934384 Another selu run was good but not as amazing
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. #swish did pretty good and might have just needed to be run longer.
+#0.0001766 0.0485738 0.1040279 0.1266184 0.1801004 0.8849963 
+#       Min.   1st Qu.    Median      Mean   3rd Qu.      Max.  #gelu looks like the way to go
+#0.0002999 0.0491050 0.0941682 0.1190759 0.1678369 0.8485532 
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0003375 0.0467307 0.0933934 0.1187992 0.1639995 0.8990500 
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0003444 0.0450957 0.0913979 0.1175441 0.1610694 1.2649339 
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000895 0.0455233 0.0924764 0.1190656 0.1643275 0.9068124 #rmse
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.000398 0.047697 0.101757 0.153965 0.185880 3.329642  #
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000445 0.0425001 0.0918529 0.1197311 0.1595850 1.9116709 
+
+#Sigmoid
+
+test <- get_weights(model)
+weights <- test[[1]] %>%  as.vector() #first weights to nodes
+#absweights <- rowSums(abs(weights))
+names(weights) <- colnames(x_train_scaled_pruned)
+sigmoid <- function(x){  1/(1+exp(1)^-x)   }
+weights_df <-     data.frame(vars=names(weights),
+                              weights = weights %>% round(3) , 
+                   weights_sigmoid=sigmoid(weights) %>% round(3) #,
+                   ) %>% 
+                   #mutate(run=i) %>%
+                   #mutate(weights_norm= weights/ max(weights) ) %>%  
+                   mutate(weights_sigmoid_norm= weights_sigmoid-min(weights_sigmoid) ) %>%  
+                   mutate(weights_sigmoid_norm= round( weights_sigmoid_norm/ max(weights_sigmoid_norm) , 3) ) %>%  
+                   mutate(correlations=cor(x=yid_train$y, x_train_scaled_pruned) %>% as.vector() %>% round(3)  ) %>%
+                   mutate(correlations_norm=round( abs(correlations)/ max(abs(correlations)) , 3 )) %>%
+                  arrange(desc(weights)) 
+weights_df %>% View()  #%>% round(3)
+
+hist(weights_df$weights_sigmoid_norm, breaks=50)
+
+```
+
+
+
+
+
+
+# cancel_out_rex + boruta
+
+Note you can get bad runs
+
+```{r}
+
+
+p_load(tictoc)
+p_load(keras)
+weight_list = list()
+
+for(i in 1:10){
+  print(i)
+  x_train_scaled <- x_train %>% scale() 
+  variables_to_keep=colnames(x_train_scaled)
+  
+  x_train_scaled_shuffled <- x_train_scaled[sample.int(nrow(x_train_scaled)),]
+  colnames(x_train_scaled_shuffled) <- paste0(colnames(x_train_scaled_shuffled), "_shuffled")
+  x_train_scaled_boruta <- cbind(x_train_scaled,x_train_scaled_shuffled)
+  dim(x_train_scaled_boruta) #3084 44502
+      
+  tic()
+  x_train_scaled_pruned=x_train_scaled[,variables_to_keep]
+  #print(paste("Keeping ", length(variables_to_keep), " variables"))
+  #you've got to rebuild the whole thing so it grabs the col count from input correctly
+  l1= 0.1^6 #put a small l1 weight on the rest just so it doesn't try to sneak around the first one, Try 5,6,7 depending on what layer options.
+  lambda_1=0.2
+  lambda_2=0.001
+  model = keras_model_sequential() %>% 
+           #layer_linear_rex(units=1,input_dim=ncol(x_train_scaled_pruned)) %>%
+           #layer_activity_regularization(l1=0.01) %>%
+           layer_batch_normalization() %>%
+           layer_dropout(rate=0.5) %>%
+           cancel_out_rex(units=1,input_dim=ncol(x_train_scaled_boruta)) %>%
+           #layer_batch_normalization() %>% #dropout after the cancel out makes it worse
+           #layer_dropout(rate=0.5) %>%
+           layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+           layer_batch_normalization() %>%
+           layer_dropout(rate=0.5) %>%
+           layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+           layer_batch_normalization() %>%
+           layer_dropout(rate=0.5) %>%
+           layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+           layer_batch_normalization() %>%
+           layer_dropout(rate=0.5) %>%
+           layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+           layer_dense(units=1, activation="linear") #we don't regularize the last layer. You can put as big a linear weight as you need on that synthetic feature
+  
+  model %>% compile( #recompile it
+     loss = "mse", #loss_mean_absolute_percentage_error, #"mse", #, #"mse", #, #"mse" ,#loss_mean_absolute_percentage_error, #"mse",
+     optimizer =  optimizer_adam(lr = 0.01) , #optimizer_sgd(0.1) , #optimizer_rmsprop(0.01), #optimizer_adam(lr = 0.01), #starting at 0.01 really does seem to matter
+     metrics = metric_mean_absolute_percentage_error #metric_mean_pred #list("metric_mean_squared_error")
+  )
+  #ok by far gelu is the best
+     
+  fit1 <- model %>% 
+            fit(x=x_train_scaled_boruta[yid_train$fold!=1,] %>% Rfast::data.frame.to_matrix(col.names=T),
+                y=yid_train[yid_train$fold!=1,'y_share10plus'] %>% Rfast::data.frame.to_matrix(col.names=T),
+                epochs = 3000,
+                verbose = 0,
+                batch_size=2048,
+                validation_data = list(x_train_scaled_boruta[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T), 
+                                       yid_train[yid_train$fold==1,'y_share10plus'] %>% Rfast::data.frame.to_matrix(col.names=T)
+                                       ),
+                view_metrics=F, #still crashes rstudio y
+                callbacks= list(callback_early_stopping(monitor = "val_loss", patience=500,
+                                                        restore_best_weights=T),
+                                callback_reduce_lr_on_plateau(monitor = "val_loss", factor = 0.1, patience=50, verbose=T, min_lr=10^-6, cooldown=100) #if no improvement #This schedule turns out to be really important
+                                )
+  )
+  
+  y_hat <- predict(model, x_train_scaled_boruta[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T) ) %>% as.vector() # in this run it seems to have done a good job. the mean and median are bigger but the distribution is way closer
+  y <- yid_train[yid_train$fold==1,'y_share10plus']$y_share10plus
+  print("Current performance")
+  print(summary(abs(y-y_hat)/y))
+  plot(y, y_hat)
+  abline(coef = c(0,1)) #it's weirdly depressed, I think because it's overfitting on the small
+  
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0000341 0.0460976 0.0965453 0.1236754 0.1652749 1.8510601
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0000341 0.0460976 0.0965453 0.1236754 0.1652749 1.8510601 
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0000534 0.0428419 0.0966694 0.1237509 0.1698306 1.6036554 
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0002518 0.0440392 0.1003353 0.1281984 0.1726847 1.8230802
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0002217 0.0464208 0.0977703 0.1238769 0.1640733 1.7121929
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0000152 0.0433164 0.0938452 0.1230484 0.1679043 1.6504963 #This is my best run ever l1= 0.1^7 with 30 cooldown
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0001183 0.0460112 0.0989861 0.1291034 0.1726775 2.0228230 #Just replicating the above, still hovering about 1.29
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0000841 0.0457669 0.1011520 0.1206759 0.1639241 0.8994766 #dropout just before cancel out leads to the best results, but not after
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0000552 0.0468296 0.0985065 0.1236026 0.1710059 1.0183228 
+  #   Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+  #0.000119 0.047612 0.098410 0.123263 0.172702 1.216292 #batch 2048
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0001742 0.0443939 0.0935183 0.1184344 0.1611034 1.0233905  #switching to selu best so
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0000159 0.0447075 0.0943467 0.1204159 0.1609498 1.2934384 Another selu run was good but not as amazing
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. #swish did pretty good and might have just needed to be run longer.
+  #0.0001766 0.0485738 0.1040279 0.1266184 0.1801004 0.8849963 
+  #       Min.   1st Qu.    Median      Mean   3rd Qu.      Max.  #gelu looks like the way to go
+  #0.0002999 0.0491050 0.0941682 0.1190759 0.1678369 0.8485532 
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0003375 0.0467307 0.0933934 0.1187992 0.1639995 0.8990500 
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0003444 0.0450957 0.0913979 0.1175441 0.1610694 1.2649339 
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0000895 0.0455233 0.0924764 0.1190656 0.1643275 0.9068124 #rmse
+  #    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+  #0.000398 0.047697 0.101757 0.153965 0.185880 3.329642  #
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0000445 0.0425001 0.0918529 0.1197311 0.1595850 1.9116709 
+  test <- get_weights(model)
+  weights <- test[[1]] %>%  as.vector() #first weights to nodes
+  #absweights <- rowSums(abs(weights))
+  names(weights) <- colnames(x_train_scaled_boruta)
+  sigmoid <- function(x){  1/(1+exp(1)^-x)   }
+  weights_df <-     data.frame(vars=names(weights),
+                                weights = weights %>% round(3) , 
+                     weights_sigmoid=sigmoid(weights) %>% round(3) #,
+                     ) %>% 
+                     #mutate(run=i) %>%
+                     #mutate(weights_norm= weights/ max(weights) ) %>%  
+                     mutate(weights_sigmoid_norm= weights_sigmoid-min(weights_sigmoid) ) %>%  
+                     mutate(weights_sigmoid_norm= round( weights_sigmoid_norm/ max(weights_sigmoid_norm) , 3) ) %>%  
+                     mutate(correlations=cor(x=yid_train$y, x_train_scaled_boruta) %>% as.vector() %>% round(3)  ) %>%
+                     mutate(correlations_norm=round( abs(correlations)/ max(abs(correlations)) , 3 )) %>%
+                     mutate(shuffled=vars %>% str_detect("shuffled")) %>%
+                    arrange(desc(weights)) 
+  weights_df %>% View()  #%>% round(3)
+  
+  hist(weights_df$weights_sigmoid_norm, breaks=50)
+  
+  weights_df %>% ggplot(aes(x=weights, color=shuffled)) + geom_histogram() + facet_wrap(facets= vars(shuffled), nrow = 2) 
+  
+  
+  weight_list[[as.character(i)]] <- weights_df %>% mutate(run=i)
+}
+
+weight_list_df <- bind_rows(weight_list) %>%
+                  mutate(var_original =vars %>% str_replace("_shuffled","") ) %>%
+                  group_by(var_original) %>%
+                    mutate(weights_mean_original= mean(weights[!shuffled])) %>%
+                    mutate(weights_mean_shuffled= mean(weights[shuffled])) %>%
+                    mutate(weights_mean_shuffled_t_test = t.test( weights[!shuffled] , weights[shuffled] )$p.value  ) %>%
+                  ungroup() %>%
+                  mutate(weights_mean_shuffled_diff=weights_mean_original-weights_mean_shuffled) %>%
+                  #arrange(desc(weights_mean_shuffled_diff)) %>%
+                  arrange(weights_mean_shuffled_t_test)
+
+temp <- t.test(c(1,2,3,4),c(1,2,3,4))
+
+weight_list_df_unique <- weight_list_df %>% filter(!shuffled) %>% filter(!duplicated(var_original)) %>% dplyr::select(-var_original)
+saveRDS(weight_list_df_unique, "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/weight_list_df.Rds")
+
+hist(weight_list_df_unique$weights_mean_shuffled_t_test)
+summary(weight_list_df_unique$weights_mean_shuffled_t_test)
+table(weight_list_df_unique$weights_mean_shuffled_t_test<0.01) #15295k that are distinguishable #the longer you run this the more that become distinguishable
+
+
+
+
+```
+
+
+# Fitting a smaller model
+
+
+With drop out it drastically cuts the number of variables, to 50. Remove dropout on the front because now we really need to use that info
+
+```{r}
+
+weight_list_df_unique %>% ggplot(aes(weights,weights_mean_shuffled_t_test)) + geom_line()
+weight_list_df_unique %>% ggplot(aes(weights_mean_shuffled_t_test,correlations)) + geom_point()
+
+variables_to_keep <- weight_list_df_unique %>% 
+                      #arrange(weights_mean_original %>% desc()) %>%
+                      #arrange(weights_mean_shuffled_diff %>% desc()) %>%
+  
+                      #arrange(weights_mean_shuffled_t_test ) %>%
+                      filter(weights_mean_shuffled_t_test  < 0.01) %>% 
+                      #filter(row_number()  <= 200) %>% #
+                      pull(vars)
+length(variables_to_keep) #100
+#Ok so if we believe that original ordering, we can fit to subsets of it and see how our performance varies, taking out the cancel out layer
+x_train_scaled_pruned=x_train_scaled[,variables_to_keep]
+l1= 0.1^6 #put a small l1 weight on the rest just so it doesn't try to sneak around the first one
+model_pruned = keras_model_sequential() %>% 
+               #layer_batch_normalization() %>%
+               #layer_dropout(rate=0.5) %>%
+               #layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               #layer_batch_normalization() %>%
+               #layer_dropout(rate=0.5) %>%
+               #layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               layer_batch_normalization() %>%
+               layer_dropout(rate=0.5) %>%
+               layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               layer_batch_normalization() %>%
+               layer_dropout(rate=0.5) %>%
+               layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               layer_batch_normalization() %>%
+               layer_dropout(rate=0.5) %>%
+               #layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               #layer_batch_normalization() %>%
+               #layer_dropout(rate=0.5) %>%
+               layer_dense(units=1024, activation="gelu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               layer_dense(units=1, activation="linear") #we don't regularize the last layer. You can put as big a linear weight as you need on that synthetic feature
+
+model_pruned %>% compile( #recompile it
+   loss = 'mse' , #loss_mean_absolute_percentage_error, #"mse" ,#loss_mean_absolute_percentage_error, #"mse",
+   optimizer =  optimizer_adam(lr = 0.01) , #optimizer_sgd(0.1) , #optimizer_rmsprop(0.01), #optimizer_adam(lr = 0.01), #starting at 0.01 really does seem to matter
+   metrics = metric_mean_absolute_error #metric_mean_absolute_percentage_error #metric_mean_pred #list("metric_mean_squared_error")
+)
+#ok by far gelu is the best
+   
+fit1_pruned <- model_pruned %>% 
+          fit(x=x_train_scaled_pruned[yid_train$fold!=1,] %>% Rfast::data.frame.to_matrix(col.names=T),
+              y=yid_train[yid_train$fold!=1,'y_share10plus'] %>% Rfast::data.frame.to_matrix(col.names=T),
+              epochs = 6000,
+              verbose = 1,
+              batch_size=1024,
+              validation_data = list(x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T), 
+                                     yid_train[yid_train$fold==1,'y_share10plus'] %>% Rfast::data.frame.to_matrix(col.names=T)
+                                     ),
+              view_metrics=F, #still crashes rstudio y
+              callbacks= list(callback_early_stopping(monitor = "val_loss", patience=1000,
+                                                      restore_best_weights=T),
+                              callback_reduce_lr_on_plateau(monitor = "val_loss", factor = 0.1, patience=200, verbose=T, min_lr=10^-7, cooldown=100) #if no improvement #This schedule turns out to be really important
+                              )
+)
+
+                  
+y_hat <- predict(model_pruned, x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T) ) %>% as.vector() 
+y <- yid_train[yid_train$fold==1,'y_share10plus']$y_share10plus
+print(summary(abs(y-y_hat)/y))
+plot(y, y_hat)
+abline(coef = c(0,1)) #
+
+     #Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0003985 0.0752380 0.1571444 0.2030359 0.2712692 1.7273574 
+#Top 100 t values
+#   Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.000054 0.046621 0.103024 0.129165 0.180877 1.379106 #100 T
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0001099 0.0486442 0.1023203 0.1289881 0.1753911 0.9427252 #50 T
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0002794 0.0539895 0.1086596 0.1377496 0.1917963 1.4637155 #Wow 25 T does a good job
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.000055 0.074640 0.154256 0.201948 0.286729 4.365303 #10 starts to get worse
+
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.000179 0.041361 0.089838 0.113936 0.155905 1.507586  #With 150 features we can match the performance of the original model sorting by T value
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000071 0.0677241 0.1498236 0.1892301 0.2643172 1.4825906 #if you sort by average weigth it's much worse so T value is the way to go
+
+install.packages("DALEX")
+install.packages("DALEXtra")
+p_load(DALEX)
+p_load(rSAFE)
+#explainer <- explain(model_pruned, data = x_train_scaled_pruned[yid_train$fold!=1,]  %>% Rfast::data.frame.to_matrix(col.names=T ), y = yid_train[yid_train$fold!=1,'y'] %>% Rfast::data.frame.to_matrix(col.names=T), label = "nn_pruned", verbose = T)
+#explainer
+
+#https://modelstudio.drwhy.ai/articles/ms-perks-features.html#parallel-computation
+#options(
+#  parallelMap.default.mode        = "socket",
+#  parallelMap.default.cpus        = 64,
+#  parallelMap.default.show.info   = FALSE
+#)
+#modelStudio(explainer,
+#            #new_observation = test[1:16,],
+#            parallel = TRUE)
+
+#library("modelStudio")
+#modelStudio(explainer)
+
+#This is not fast
+safe_extractor<- safe_extraction(explainer, penalty = "MBIC", verbose = T, interactions=F) #AttributeError: 'Sequential' object has no attribute 'terms' interactions throws an error with kerras
+print(safe_extractor)
+
+
+devtools::install_github("ModelOriented/shapper")
+library("shapper")
+install_shap()
+
+library("iBreakDown")
+temp <- cbind(x_train_scaled_pruned[yid_train$fold==1,], yid_train[yid_train$fold==1,'y']) %>% as.data.frame()
+rf_la <- local_attributions(explainer,
+                            x_train_scaled_pruned[yid_train$fold==1,][1,]
+                            )
+
+
+ 
+
+form <- ~ -1 + .^2
+interactions_scaled_pruned <-  model.matrix(form, data = x_train_scaled[,variables_to_keep] %>% as.data.frame() )  %>% as.data.frame()  %>% janitor::clean_names()
+interactions_pruned <-  model.matrix(form, data = x_train[,variables_to_keep]  %>% as.data.frame())  %>% as.data.frame()  %>% janitor::clean_names()
+dim(interactions_scaled_pruned)
+dim(interactions_pruned)
+
+library(biglasso)
+fit.lasso_pruned <- cv.biglasso(X= interactions_scaled_pruned[yid_train$fold!=1,] %>% as.big.matrix(),
+                      y=yid_train[yid_train$fold!=1,'y'] %>% unlist() %>% as.vector() , 
+                      family = 'gaussian', ncores=16, #can't use all cores because the memory uses explodes
+                      penalty="lasso",
+                      eval.metric="MAPE",
+                      cv.ind= yid_train[yid_train$fold!=1,'fold'] ,
+                      nfolds=6)
+summary(fit.lasso_pruned)
+plot(fit.lasso_pruned, type = 'all')
+coef <- coef(fit.lasso_pruned, lambda=fit.lasso_pruned$lambda.min, drop = TRUE)
+coef_df <- as.data.frame(coef %>% as.matrix()) %>% setNames("coef") %>% filter(coef!=0) %>% mutate(coef=coef %>% round(5))
+coef[which(coef != 0)]
+coef_df %>% View()
+
+y_hat_lasso <- predict(fit.lasso_pruned, x_train_scaled_withinteractions_pruned[yid_train$fold==1,]  %>% as.big.matrix(), type = "response", lambda=fit.lasso_pruned$lambda.min)[,1]
+y <- yid_train[yid_train$fold==1,'y']$y
+print("Current performance")
+print(summary(abs(y-y_hat_lasso)/y))
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000673 0.0711740 0.1653232 0.2170943 0.2949682 3.0156145 #The linear version of this actually doesn't fit great
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.000433 0.119985 0.310071 0.478108 0.615144 6.039670 
+
+#Ok so a little worse still but damn is it not right on for LA
+plot(y, y_hat_lasso)
+abline(coef = c(0,1)) #it's weirdly depressed, I think because it's overfitting on the small
+
+#Final linear model
+lasso_keep <- rownames(coef_df %>% filter(coef!=0))[-1] #exclude intercept
+lm1 <- lm( y~.,
+           data= cbind( interactions_pruned[yid_train$fold!=1,lasso_keep],
+                        yid_train[yid_train$fold!=1,'y'] ) %>% as.data.frame() ) 
+y_hat_lm <- predict(lm1, interactions_pruned[yid_train$fold==1,lasso_keep ]  ) %>% as.vector()
+
+y <- yid_train[yid_train$fold==1,'y']$y 
+summary(abs(y-y_hat_lm)/y)
+plot(y, y_hat_lm)
+abline(coef = c(0,1)) #
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.000102 0.062935 0.130816 0.190263 0.251480 3.674402
+summary(lm1)
+coef(lm1) %>% as.data.frame() %>% janitor::clean_names() %>%  mutate(x=x %>% round(2) ) %>% View()
+
+
+explainer_lasso <- explain(fit.lasso_pruned, data = x_train_withinteractions_pruned[yid_train$fold!=1,]  %>% Rfast::data.frame.to_matrix(col.names=T ),
+                           y = yid_train[yid_train$fold!=1,'y'] %>% Rfast::data.frame.to_matrix(col.names=T), label = "nn_pruned", verbose = T)
+explainer_lasso
+library("modelStudio")
+modelStudio(explainer_lasso)
+
+
+```
+
+
+
+
+
+
+```{r}
+
+weights_df %>% ggplot(aes(weights_norm,weights_sigmoid_norm)) + geom_line()
+variables_to_keep <- weights_df %>% filter(weights %>% round(5) > 0) %>% pull(vars)
+length(variables_to_keep) #672 
+#Ok so if we believe that original ordering, we can fit to subsets of it and see how our performance varies, taking out the cancel out layer
+l1= 0.1^6 #maybe we need a bigger l1 now?
+x_train_scaled_pruned=x_train_scaled[,variables_to_keep]
+model_pruned = keras_model_sequential() %>% 
+               #layer_batch_normalization() %>%
+               #layer_dropout(rate=0.5) %>%
+               layer_dense(units=1024, activation="relu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               layer_batch_normalization() %>%
+               layer_dropout(rate=0.5) %>%
+               layer_dense(units=1024, activation="relu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               layer_batch_normalization() %>%
+               layer_dropout(rate=0.5) %>%
+               layer_dense(units=1024, activation="relu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               layer_batch_normalization() %>%
+               layer_dropout(rate=0.5) %>%
+               layer_dense(units=1024, activation="relu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               layer_dense(units=1, activation="linear") #we don't regularize the last layer. You can put as big a linear weight as you need on that synthetic feature
+
+model_pruned %>% compile( #recompile it
+       loss = loss_mean_absolute_percentage_error, #"mse" ,#loss_mean_absolute_percentage_error, #"mse",
+       optimizer =  optimizer_adam(lr = 0.01), #starting at 0.01 really does seem to matter
+       metrics = metric_mean_absolute_percentage_error #metric_mean_pred #list("metric_mean_squared_error")
+)
+
+fit_pruned <- model_pruned %>% 
+          fit(x=x_train_scaled_pruned[yid_train$fold!=1,] %>% Rfast::data.frame.to_matrix(col.names=T),
+              y=yid_train[yid_train$fold!=1,'y'] %>% Rfast::data.frame.to_matrix(col.names=T),
+              epochs = 2000,
+              verbose = 1,
+              batch_size=512,
+              validation_data = list(x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T), 
+                                     yid_train[yid_train$fold==1,'y'] %>% Rfast::data.frame.to_matrix(col.names=T)
+                                     ),
+              view_metrics=F, #still crashes rstudio y
+              callbacks= list(callback_early_stopping(monitor = "val_loss", patience=300,
+                                                      restore_best_weights=T),
+                              callback_reduce_lr_on_plateau(monitor = "val_loss", factor = 0.1, patience=100, verbose=T, min_lr=10^-5) #if no improvement
+                              )
+)
+y_hat <- predict(model_pruned, x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T) ) %>% as.vector() 
+y <- yid_train[yid_train$fold==1,'y']$y
+print(summary(abs(y-y_hat)/y))
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0001054 0.0711509 0.1596065 0.1973572 0.2704103 2.1722214 #just really can't do as well. Weird.
+plot(y, y_hat)
+abline(coef = c(0,1)) #
+
+```
+
+
+
+
+
+Fit to a 20th
+
+```{r}
+
+weights_df %>% ggplot(aes(weights_norm,weights_sigmoid_norm)) + geom_line()
+variables_to_keep <- weights_df %>% filter(weights %>% round(2) > 0) %>% pull(vars)
+length(variables_to_keep) #1107
+#Ok so if we believe that original ordering, we can fit to subsets of it and see how our performance varies, taking out the cancel out layer
+l1= 0.1^6 #0.1^6 #maybe we need a bigger l1 now?
+x_train_scaled_pruned=x_train_scaled[,variables_to_keep]
+model_pruned = keras_model_sequential() %>% 
+               layer_batch_normalization() %>%
+               layer_dropout(rate=0.5) %>%
+               layer_dense(units=1024, activation="relu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               layer_batch_normalization() %>%
+               layer_dropout(rate=0.5) %>%
+               layer_dense(units=1024, activation="relu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               layer_batch_normalization() %>%
+               layer_dropout(rate=0.5) %>%
+               layer_dense(units=1024, activation="relu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               layer_batch_normalization() %>%
+               layer_dropout(rate=0.5) %>%
+               layer_dense(units=1024, activation="relu" , kernel_regularizer = regularizer_l1_l2(l1,0)) %>%  #, kernel_regularizer = regularizer_l1_l2(l1,0)
+               #layer_batch_normalization() %>%
+               #layer_dropout(rate=0.5) %>%
+               layer_dense(units=1, activation="linear") #we don't regularize the last layer. You can put as big a linear weight as you need on that synthetic feature
+
+model_pruned %>% compile( #recompile it
+       loss = loss_mean_absolute_percentage_error, #"mse" ,#loss_mean_absolute_percentage_error, #"mse",
+       optimizer =  optimizer_adam(lr = 0.01), #starting at 0.01 really does seem to matter
+       metrics = metric_mean_absolute_percentage_error #metric_mean_pred #list("metric_mean_squared_error")
+)
+
+fit_pruned <- model_pruned %>% 
+          fit(x=x_train_scaled_pruned[yid_train$fold!=1,] %>% Rfast::data.frame.to_matrix(col.names=T),
+              y=yid_train[yid_train$fold!=1,'y'] %>% Rfast::data.frame.to_matrix(col.names=T),
+              epochs = 1000,
+              verbose = 1,
+              batch_size=512,
+              validation_data = list(x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T), 
+                                     yid_train[yid_train$fold==1,'y'] %>% Rfast::data.frame.to_matrix(col.names=T)
+                                     ),
+              view_metrics=F, #still crashes rstudio y
+              callbacks= list(callback_early_stopping(monitor = "val_loss", patience=200,
+                                                      restore_best_weights=T),
+                              callback_reduce_lr_on_plateau(monitor = "val_loss", factor = 0.1, patience=30, verbose=T, min_lr=10^-5) #if no improvement
+                              )
+)
+y_hat <- predict(model_pruned, x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T) ) %>% as.vector() 
+y <- yid_train[yid_train$fold==1,'y']$y
+print(summary(abs(y-y_hat)/y))
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000152 0.0937830 0.1845541 0.2265783 0.3160949 2.2899161  #somehow much worse
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0002749 0.0832599 0.1798255 0.2201487 0.3058473 2.0584674  #l1= 0.1^5 
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000161 0.0725616 0.1637372 0.2004813 0.2764011 2.0176673  #l1= 0.1^4 if you tun wll enough you can get better performance
+#    Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0002609 0.0825394 0.1636478 0.2135361 0.2870891 2.798826 l1= 0.1^3 #didn't converge in 1k
+
+#Throwing in dropout and batchnorm helped
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000162 0.0551489 0.1195891 0.1473602 0.2053775 1.4447070
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#0.0000055 0.0511849 0.1211703 0.1542595 0.2107068 1.6668960
+
+#With dropout you can let up on the l1 0.1^6
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#0.000053 0.054090 0.114205 0.136257 0.193916 1.425904 #best nubmer so far
+
+#looks like you need both batchnorm and dropout, nothing before final lyarer
+
+
+plot(y, y_hat)
+abline(coef = c(0,1)) #really screwing up la now
+
+```
+
+
+
+
+
+```{r}
+
+yid_train <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/yid_train.Rds")
+x_train <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train_imputed.Rds")
+Folds1 <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/Folds1.Rds")
+xy_train <- cbind(yid_train[,'y'],x_train) %>% as.data.frame()
+
+
+p_load(keras)
+weight_list = list()
+l1=0.01
+
+variables_to_keep=colnames(x_train_scaled)
+x_train_scaled <- x_train %>% scale() 
+#yid_train_scaled <- yid_train %>% mutate(y= y %>% scale()) #don't scale 7 it breaks everything probably because of our loss of % error
+
+library(tictoc)
+for(i in 1:10){
+  tic()
+    x_train_scaled_pruned=x_train_scaled[,variables_to_keep]
+    print(paste("Starting Iteration ",i))
+    print(paste("Keeping ", length(variables_to_keep), " variables"))
+    #you've got to rebuild the whole thing so it grabs the col count from input correctly
+    model = keras_model_sequential() %>% 
+      
+         layer_dense(units=1024, activation="relu", kernel_regularizer = regularizer_l1_l2(l1,0) ) %>% 
+         layer_dense(units=1024, activation="relu", kernel_regularizer = regularizer_l1_l2(l1,0) ) %>% 
+         layer_dense(units=1024, activation="relu", kernel_regularizer = regularizer_l1_l2(l1,0) ) %>% 
+         layer_dense(units=1, activation="linear") #we don't regularize the last layer. You can put as big a linear weight as you need on that synthetic feature
+
+    model %>% compile( #recompile it
+       loss = loss_mean_absolute_percentage_error, #"mse" ,#loss_mean_absolute_percentage_error, #"mse",
+       optimizer =  optimizer_adam(lr = 0.01), #starting at 0.01 really does seem to matter
+       metrics = metric_mean_absolute_percentage_error #metric_mean_pred #list("metric_mean_squared_error")
+    )
+    
+       
+    fit1 <- model %>% 
+              fit(x=x_train_scaled_pruned[yid_train$fold!=1,] %>% Rfast::data.frame.to_matrix(col.names=T),
+                  y=yid_train[yid_train$fold!=1,'y'] %>% Rfast::data.frame.to_matrix(col.names=T),
+                  epochs = 1000,
+                  verbose = 0,
+                  batch_size=512,
+                  validation_data = list(x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T), 
+                                         yid_train[yid_train$fold==1,'y'] %>% Rfast::data.frame.to_matrix(col.names=T)
+                                         ),
+                  view_metrics=F, #still crashes rstudio y
+                  callbacks= list(callback_early_stopping(monitor = "val_loss", patience=50,
+                                                          restore_best_weights=T),
+                                  callback_reduce_lr_on_plateau(monitor = "val_loss", factor = 0.1, patience=20, verbose=T) #if no improvement
+                                  )
+    )
+  
+    y_hat <- predict(model, x_train_scaled_pruned[yid_train$fold==1,] %>% Rfast::data.frame.to_matrix(col.names=T) ) %>% as.vector() # in this run it seems to have done a good job. the mean and median are bigger but the distribution is way closer
+    y <- yid_train[yid_train$fold==1,'y']$y
+    print("Current performance")
+    print(summary(abs(y-y_hat)/y))
+  
+    plot(y, y_hat)
+    abline(coef = c(0,1)) #it's weirdly depressed, I think because it's overfitting on the small
+    
+    test <- get_weights(model)
+    weights <- test[[1]] #first weights to nodes
+    absweights <- rowSums(abs(weights))
+    names(absweights) <- colnames(x_train_scaled_pruned)
+    absweights %>% round(3) %>% as.data.frame() %>% setnames("weight") %>% arrange(desc(weight)) %>% View()
+    #summary(rowSums(abs(weights)))
+    #hist(rowSums(abs(weights)))
+    #table((absweights %>% round(3))==0) #14,837 of them are near zero'd out at l1=0.001, #28197 zeroed out at l1=0.01
+    
+    condition <- absweights %>% round(3)==0
+    variables_to_prune <- names(absweights)[condition]
+    variables_to_keep <- names(absweights)[!condition]
+    
+    weight_list[[as.character(i)]] <- absweights
+  toc()
+}    
+print(paste("Keeping ", length(variables_to_keep), " variables"))
+
+```
+
+
+
+```{r}
+
+ntree <- 25
+n <- nrow(x_train)
+s.size <- floor(n * 0.66)
+swr <- TRUE
+samp <- randomForestSRC:::make.sample(ntree, n, s.size, swr)
+
+#So for each tree we sample 2051, and there can be doubling up
+tab_list <- list()
+for(k in 1:6){
+  for(i in 1:100){
+    tab_list[[paste0( as.character(i),"_",as.character(k) )  ]] <- table(sample(which(yid_train$fold!=k), size=s.size, replace = T)) %>% as.data.frame() %>% setNames(c("index",paste0("tree",i,"_",k) )) %>% mutate(index=as.numeric(as.character(index)))
+  }
+}
+samp <- tab_list %>% reduce(full_join, by = "index") %>% arrange(index ) %>% dplyr::mutate_all(replace_na, 0) %>% dplyr::select(-index)
+
+library(ranger)
+rg.iris <- ranger(y ~ ., data = xy_train,  num.trees=100, num.threads=64) #Error: protect(): protection stack overflow
+
+library(tictoc)
+library(randomForestSRC)
+toc()
+  rf <- rfsrc(y ~.,
+              data = xy_train,
+              #nodesize = 1, nsplit = 10, nimpute = 1,
+              fast = T,
+              #ntree =ntree,
+              bootstrap = "by.user",
+              samp=samp
+              ) #it has a long single core leadup but then goes multicore
+toc()
+summary( (rf$predicted.oob / xy_train$y)-1 ) #comparable if not actually better
+
+missingness_df_imputed <- data.frame(missingness=colMeans(is.na(x_train_imputed)), var=colnames(x_train_imputed)) 
+summary(missingness_df_imputed$missingness)
+
+
+
+
+#devtools::install_github("YaohuiZeng/biglasso")
+library(biglasso)
+x_train_big <- x_train %>% scale()  %>% as.big.matrix() #you have to scale it otherwise the constraints are basically getting free weight for covariates on arbitary scales
+table(colSums(!is.finite(x_train_big))) #there are no infinites in here
+#memory of this is now getting pretty wild, 150gb
+fit.lasso <- cv.biglasso(X=x_train_big ,
+                      y=yid_train$y %>% unlist() %>% as.vector() , 
+                      family = 'gaussian', ncores=16, #can't use all cores because the memory uses explodes
+                      penalty="lasso",
+                      eval.metric="MAPE",
+                      cv.ind=yid_train$fold,
+                      nfolds=6)
+summary(fit.lasso)
+plot(fit.lasso, type = 'all')
+coef <- coef(fit.lasso, lambda=fit.lasso$lambda.min, drop = TRUE)
+coef_df <- as.data.frame(coef %>% as.matrix()) %>% setNames("coef") %>% filter(coef!=0) %>% mutate(coef=coef %>% round(5))
+coef[which(coef != 0)]
+
+p_load(xgboost)
+
+#gbtree, 0.01, and 8 performed way better
+#Xgboost with imputation
+pars_best <- list( 
+  booster = "gblinear"  #"gbtree" ##
+  , eta = 0.0001 #getBestPars(optObj)$eta #they picked a very low learning rate #lower learning rate for the final one 0.0001 for reg
+  , max_depth = 1 #grid_result_best$max_depth
+  #, min_child_weight = 15 #grid_result_best$min_child_weight
+  , subsample = 1 #0.66 #0.66 #grid_result_best$subsample
+  #, colsample_bynode = 1 #0.1 ##0.148
+  , objective = "reg:squarederror" #"reg:squaredlogerror" # 
+  , eval_metric = "mape" #"rmse" #" #  #"mape" #"mape" # "rmse"
+  ,lambda=0 #1
+  ,alpha=1 #1
+  ,gamma=0
+)
+
+#[,condition] wow there is actually something in those high missing values
+#Stopping. Best iteration:
+#[34]	train-mape:0.200777+0.044667	test-mape:0.204785+0.059018
+xgboost_unpruned <- xgb.cv(params = pars_best, data = xgb.DMatrix( x_train %>% scale()  %>% Rfast::data.frame.to_matrix(col.names=T) , #%>% scale()
+                                                                   label=yid_train[,'y']  %>% Rfast::data.frame.to_matrix(col.names=T)) , nround = 3000, 
+                   folds = Folds1,
+                   #nfold=3,
+                   prediction = T, showsd = F, early_stopping_rounds = 50, maximize = F, verbose = 1,nthread=64,
+                   callbacks=list(cb.cv.predict(save_models = TRUE)) ,
+                   base_score=mean(yid_train[,'y']$y) #if you give it a mean it'll do ok, it loses that sense of scale when you scale the whole rhs
+                   ) #test-mape:0.199963+0.030559 # test-mape:0.262693+0.064975
+
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#-18.91947  -0.12673   0.01491   0.08851   0.17107 121.09104 
+summary((xgboost_unpruned$pred  /yid_train$y)-1) #median of 1% off  #This says -0.0333 
+
+plot( yid_train$y, xgboost_unpruned$pred ) #basically really good until t gets out in the weeds and then goes hetero
+abline(coef = c(0,1))
+
+plot( yid_train$y, xgboost_unpruned$pred/yid_train$y ) #basically really good until t gets out in the weeds and then goes hetero
+abline(coef = c(0,1))
+
+
+imp <- xgb.importance(model = xgboost_unpruned$models[[1]]) %>% clean_names() %>% mutate(feature=feature+1) %>% mutate(var=colnames(x_train)[feature])
+summary(imp$weight)
+table(imp$weight==0) #only placed exactly zero weight on 865 feature
+
+
+print(xgboost_unpruned$models[[1]])
+ 
+(dt <- xgb.model.dt.tree(colnames(x_train), xgboost_unpruned$models[[1]]))
+xgb.dump(xgboost_unpruned$models[[1]], "/home/skynet3/Documents/test.txt", with_stats = F)
+
+library(lightgbm)
+params <- list(objective = "regression",
+               ,metric = "mape"
+               ,linear_tree=T
+               ,num_threads=64
+               )
+lgb_unpruned <- lgb.cv(
+            params = params
+          , data = lgb.Dataset( x_train %>% Rfast::data.frame.to_matrix(col.names=F), #it might be throwing an error bc the column names are too long
+                                label = y_train %>%  Rfast::data.frame.to_matrix(col.names=T) )
+          , nrounds = 3000L
+          ,early_stopping_rounds=30L
+          #, nfold = 5L
+          , min_data = 1L
+          , learning_rate = 0.1
+          ,folds = Folds1,
+)
+#https://github.com/microsoft/LightGBM/issues/283
+get_lgbm_cv_preds <- function(cv){
+        rows <- length(cv$boosters[[1]]$booster$.__enclos_env__$private$valid_sets[[1]]$.__enclos_env__$private$used_indices)+length(cv$boosters[[1]]$booster$.__enclos_env__$private$train_set$.__enclos_env__$private$used_indices)
+        preds <- numeric(rows)
+        for(i in 1:length(cv$boosters)){
+                preds[
+                cv$boosters[[i]]$booster$.__enclos_env__$private$valid_sets[[1]]$.__enclos_env__$private$used_indices] <-
+                cv$boosters[[i]]$booster$.__enclos_env__$private$inner_predict(2)
+        }
+        return(preds)
+}
+
+#Was generally more accurate but took way way longer
+summary( (get_lgbm_cv_preds(lgb_unpruned)  /y_train$y)-1) #median of 1% off  #This says -0.0333 
+#      Min.    1st Qu.     Median       Mean    3rd Qu.       Max. 
+#-238.36900   -0.13029    0.00857   -0.00571    0.16113   17.28349 
+
+#also the plot looks all over the place, I find the xgboost one more pleasing, so there's that.
+plot( y_train$y, get_lgbm_cv_preds(lgb_unpruned)) #basically really good until t gets out in the weeds and then goes hetero
+abline(coef = c(0,1))
+
+
+
+#ah ok basically it got down to the last 4k and my code to quite didn't fire but it kept trying anyway and every now and then one would drop below the threshold and get kicked out
+p_load(SHAPforxgboost)
+xgboost_pruned=xgboost_unpruned
+x_train_pruned=x_train
+for(i in 1:1000){
+  print(i)
+  xgboost_for_shap= xgboost_pruned$models[[1]]
+  shap_values <- SHAPforxgboost::shap.values(xgb_model = xgboost_for_shap, X_train =  x_train_pruned  %>% Rfast::data.frame.to_matrix(col.names=T ) )
+  shap_long1 <- SHAPforxgboost::shap.prep(xgb_model = xgboost_for_shap, X_train = x_train_pruned  %>% Rfast::data.frame.to_matrix(col.names=T )   ) #it needs column names
+  importances <- SHAPforxgboost::shap.importance(shap_long1, names_only = FALSE, top_n = Inf)
+  print(summary(importances$mean_abs_shap))
+  keep_vars <- importances$variable[importances$mean_abs_shap>0.1]
+  if(length(keep_vars)==nrow(x_train_pruned)){print("Done"); break}
+  x_train_pruned <- x_train_pruned[,keep_vars]
+  print(dim(x_train_pruned))
+  xgboost_pruned <- xgb.cv(params = pars_best, data = xgb.DMatrix( x_train_pruned %>% Rfast::data.frame.to_matrix(col.names=T),
+                                                                   label=y_train %>% Rfast::data.frame.to_matrix(col.names=T)) , nround = 3000, 
+                   folds = Folds1,
+                   prediction = T, showsd = F, early_stopping_rounds = 30, maximize = F, verbose = 0,nthread=64,
+                   callbacks=list(cb.cv.predict(save_models = TRUE))
+                   )
+  print(xgboost_pruned$evaluation_log[xgboost_pruned$best_iteration,])
+}
+
+
+
+
+
+    
+    
+```
+
+
+Note that smaller counties are harder to estimate in percent space
+
+
+
+
+```{r}
+#Stopping. Best iteration:
+#[42]	train-mape:0.193424+0.041284	test-mape:0.194585+0.042249
+hist(importances$mean_abs_shap)
+keep_vars <- importances$variable[importances$mean_abs_shap>0.1]
+x_train_pruned <- x_train[,keep_vars]
+xgboost2_pruned <- xgb.cv(params = pars_best, data = xgb.DMatrix( x_train_pruned %>% Rfast::data.frame.to_matrix(col.names=T),
+                                                                   label=y_train %>% 
+                                                                     Rfast::data.frame.to_matrix(col.names=T)) , nround = 3000, 
+                   folds = Folds1,
+                   prediction = T, showsd = F, early_stopping_rounds = 30, maximize = F, verbose = 1,nthread=64,
+                   callbacks=list(cb.cv.predict(save_models = TRUE))
+                   ) 
+
+xgboost_for_shap= xgboost1_imputed$models[[1]]
+shap_values <- SHAPforxgboost::shap.values(xgb_model = xgboost_for_shap, X_train =  x_train  %>% Rfast::data.frame.to_matrix(col.names=T ) )
+shap_long1 <- SHAPforxgboost::shap.prep(xgb_model = xgboost_for_shap, X_train = x_train  %>% Rfast::data.frame.to_matrix(col.names=T )   ) #it needs column names
+importances <- SHAPforxgboost::shap.importance(shap_long1, names_only = FALSE, top_n = Inf)
+
+
+
+
+
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#-5.050800 -0.149463 -0.015702 -0.000864  0.127097  5.686934 
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#-5.167957 -0.144419 -0.013868  0.009659  0.131293  6.510766 
+#Now doing cv
+#   Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#-3.82580 -0.17877 -0.03873 -0.05268  0.10184  4.07558 
+
+
+
+dtrain <<- xgb.DMatrix( x_train %>% Rfast::data.frame.to_matrix(col.names=T),
+                                                                   label=y_train %>% 
+                                                                     #mutate(y=log(y)) %>%
+                                                                     Rfast::data.frame.to_matrix(col.names=T))
+#This finds the best hyperparamaters for that set of variables which might change as it gets smaller 
+p_load("ParBayesianOptimization")
+#We can pass whatever we want to this so we can do feature selection too
+scoringFunction <- function(max_depth, min_child_weight, subsample, alpha, lambda,colsample_bynode, gamma, colsample_bytree) {
+  
+  Pars <- list( 
+    booster = "gblinear" #"gbtree"
+    , eta = 0.0001 #they picked a very low learning rate #lower eta is always better performing
+    , max_depth = max_depth
+    , min_child_weight = min_child_weight
+    , subsample = subsample
+    , colsample_bynode = colsample_bynode #0.1 ##0.148
+    , colsample_bytree= colsample_bytree
+    , objective = "reg:squarederror" #"reg:squarederror"
+    , eval_metric = "rmse"
+    ,lambda=lambda
+    ,alpha=alpha
+    ,gamma=gamma
+  )
+  
+  xgbcv <- xgb.cv(
+    params = Pars
+    , data = dtrain
+    , nround = 2000
+    , folds = Folds1
+    , prediction = F
+    , showsd = F
+    , early_stopping_rounds = 10
+    , maximize = F
+    , verbose = 0,
+    nthread=64
+    )
+  
+  return(
+    list( 
+      #make sure you allign all this to the actual metric you're using
+      Score = min(xgbcv$evaluation_log$test_rmse_mean)*-1 #For some reason it can only maximize, so we have to -1 this 
+      , nrounds = xgbcv$best_iteration
+    )
+  )
+}
+
+bounds <- list( 
+  #eta = c(0.01,0.3),
+  max_depth = c(2L, 10L)
+  , min_child_weight = c(1, 30)
+  , subsample = c(0.5, 1)
+  ,colsample_bynode =c(0.1,1)
+  ,colsample_bytree=c(0.1,1)
+  ,alpha=c(0,10)
+  ,lambda=c(0,10)
+  ,gamma = c(0,10)
+)
+
+optObj <- bayesOpt(
+  verbose =1,
+  FUN = scoringFunction,
+  , bounds = bounds
+  , initPoints = 10 #increasing this to 30 throws an err
+  , iters.n = 400
+  #, iters.k=3
+  #, acqThresh=0.7
+  , otherHalting = list(minUtility = 0.1) #stop runnin when the utility of another one drops below a threshold
+  , plotProgress = T #Set to false when running notebook
+)
+
+optObj$scoreSummary %>% View()
+
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#-17.78039  -0.11115   0.00504   0.02644   0.13890  80.50504 
+     
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#-16.00689  -0.11835   0.00171   0.03069   0.12960 147.64214 
+     
+#      Min.    1st Qu.     Median       Mean    3rd Qu.       Max. 
+#-219.21948   -0.07687    0.00944   -0.00475    0.11741   33.87575
+      
+#      Min.    1st Qu.     Median       Mean    3rd Qu.       Max. 
+#-248.09442   -0.07982    0.01064    0.00642    0.12195   63.53971 
+
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#-4.94817 -0.08479  0.00848  0.08941  0.12699 50.24527 
+    
+#      Min.    1st Qu.     Median       Mean    3rd Qu.       Max. 
+#-111.10747   -0.47312   -0.02247    0.04892    0.38171  295.63563 
+      
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#-70.84353  -0.08741   0.00826   0.03194   0.12192  29.54164 
+     
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+# -2.47893  -0.08621   0.01273   0.11571   0.12442 109.71263
+     
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#-1.41023 -0.08358  0.00649  0.06130  0.11735 34.56018 
+    
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#-81.72856  -0.08456   0.01354   0.03330   0.11851  38.36452 
+
+#     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+#-0.918995 -0.084164  0.009657  0.047700  0.115044 27.702016 
+     
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#-11.6997   0.8614   1.0286   0.9667   1.2055   3.9919 
+
+#    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#-0.88244 -0.13108 -0.04057  0.04552  0.07292 42.68884 
+    
+ #tree booster
+#   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.1180  0.8686  1.0107  1.3295  1.2078 71.6947 
+ 
+ #Linear booster
+#     Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#-27.4994   0.8570   1.0983   0.9044   1.3328   4.6711 
+
+
+p_load(DALEX)
+p_load(rSAFE)
+explainer <- explain(xgboost_for_shap, data = x_train  %>% Rfast::data.frame.to_matrix(col.names=T ), y = y_train %>% Rfast::data.frame.to_matrix(col.names=T), label = "lasso", verbose = T)
+explainer
+
+safe_extractor<- safe_extraction(explainer, penalty = "MBIC", verbose = T, interactions=F)
+print(safe_extractor)
+
+#plot(safe_extractor_lasso, variable = "percent_of_adults_with_a_bachelors_degree_or_higher_2014_18")
+#x_imputed_train1_transformed <- safely_transform_data(safe_extractor_lasso, x_imputed_train1 %>% Rfast::data.frame.to_matrix(col.names=T), verbose = T)
+
+
+
+table(importances$mean_abs_shap>0) #7400 vars we can kill right away
+
+shap.plot.summary.wrap1(model=xgboost_for_shap, X=x_train  %>% Rfast::data.frame.to_matrix(col.names=T ), top_n=50, dilute = 2) 
+
+#ok so first count all the houses without a morgage
+var="acs_mortgage_status_and_selected_monthly_owner_costs_estimate_total_housing_units_without_a_mortgage_b25087_020"
+p <- SHAPforxgboost::shap.plot.dependence(data_long = shap_long1, #created above
+                           #data_int = shap_int,
+                           x= var , y = var #, # y = "black_perc",  #ah it only shows up in some folds
+                          # color_feature = F
+                          ) 
+#Basically perfectly linear, don't know what the slope is but has very strong opinions about it
+
+#Then count all white males 16 and 17 year olds who aren't poor
+var="acs_poverty_status_in_the_past_12_months_by_sex_by_age_white_alone_not_hispanic_or_latino_estimate_total_income_in_the_past_12_months_at_or_above_poverty_level_male_16_and_17_years_b17001h_038"
+p <- SHAPforxgboost::shap.plot.dependence(data_long = shap_long1, #created above
+                           #data_int = shap_int,
+                           x= var , y = var #, # y = "black_perc",  #ah it only shows up in some folds
+                          # color_feature = F
+                          ) 
+
+var="acs_household_type_by_household_size_estimate_total_family_households_2_person_household_b11016_003"
+p <- SHAPforxgboost::shap.plot.dependence(data_long = shap_long1, #created above
+                           #data_int = shap_int,
+                           x= var , y = var #, # y = "black_perc",  #ah it only shows up in some folds
+                          # color_feature = F
+                          ) 
+
+var="acs_tenure_by_telephone_service_available_by_age_of_householder_estimate_total_owner_occupied_no_telephone_service_available_householder_65_years_and_over_b25043_010"
+p <- SHAPforxgboost::shap.plot.dependence(data_long = shap_long1, #created above
+                           #data_int = shap_int,
+                           x= var , y = var #, # y = "black_perc",  #ah it only shows up in some folds
+                          # color_feature = F
+                          ) 
+
+
+library(misle)
+mixgb
+
+keep <- importances %>% pull(variable)
+keep <- keep[1:500]
+library(miceRanger)
+miceObj1 <- miceRanger(data=x_train %>% dplyr::select(one_of(keep))  %>% as.data.table()  , m=1    , returnModels = TRUE    , verbose=F  ) #in the rare case you only end up with missing in the test then only impute in the test
+MIXGB<-Mixgb$new(x_train %>% dplyr::select(one_of(keep))  %>% as.data.table(),pmm.type="auto",pmm.k = 5)
+mixgb.data<-MIXGB$impute(m=1) #miceranger did not care for 500 variables. Seeing how this does, #also super slow
+x_train_imputed <<- completeData(miceObj1)$Dataset_1  %>% Rfast::data.frame.to_matrix(col.names=T)
+
+#So imputing is now our big hurdle
+
+print("Lasso")
+p_load(glmnet)
+tictoc::tic()
+  lasso_1 = cv.glmnet(x=x_train_imputed %>% Rfast::data.frame.to_matrix(col.names=T), y=y_train %>% Rfast::data.frame.to_matrix(col.names=T) )
+  lasso_1_coefs_min <- coef(lasso_1, s = "lambda.min") %>% as.matrix() %>% as.data.frame() %>%  filter(s1!=0)  %>% arrange(s1)
+  
+  id_test1$y_hat_lasso_imputed <- predict(lasso_1, newx=x_imputed_interactions_test1 %>% Rfast::data.frame.to_matrix(col.names=T), s = c("lambda.1se"), gamma="lambda.1se")[,1] #Test predictions 
+  id_test1$coefs_lasso <- lasso_1_coefs_min %>% unlist() %>% setNames(rownames(lasso_1_coefs_min)) %>% toJSON(indent=0, method="C" )
+tictoc::toc()
+      
+
+
+
+shap_long1$fips <- fips[shap_long1$ID]
+shap_long1$fold <- 1
+shap_int1 <- shap.prep.interaction(xgb_mod = xgboost_for_shap, x_train = x_train  %>% Rfast::data.frame.to_matrix(col.names=T )) #This one is trickier because it's an array
+
+
+
+
+
+
+
+
+  
+    
+print("xgboost")
+tictoc::tic()
+  xgboost1_imputed <- xgb.cv(params = pars_best, data = xgb.DMatrix( x_imputed_interactions_train1 %>% Rfast::data.frame.to_matrix(col.names=T), label=y_train1 %>% Rfast::data.frame.to_matrix(col.names=T)) , nround = 3000, 
+                     folds = Folds1, prediction = F, showsd = F, early_stopping_rounds = 10, maximize = F, verbose = 0,nthread=64) #mf set threads to cores not threads
+  
+  xgboost1_nocv_imputed  <-  xgb.train(params=pars_best, data= xgb.DMatrix( x_imputed_interactions_train1 %>% Rfast::data.frame.to_matrix(col.names=T),label=y_train1 %>% Rfast::data.frame.to_matrix(col.names=T)) ,
+                               nrounds=xgboost1_imputed$best_iteration, verbose = 0, nthread=64) #mf set threads to cores not threads
+  id_test1$y_hat_xgboost_imputed <- predict(xgboost1_nocv_imputed, xgb.DMatrix( x_imputed_interactions_test1 %>% Rfast::data.frame.to_matrix(col.names=T), 
+                                                                                label=y_test1 %>% Rfast::data.frame.to_matrix(col.names=T )) )
+tictoc::toc()
+
+```
+

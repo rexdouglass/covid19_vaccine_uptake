@@ -1,0 +1,348 @@
+---
+title: "What explains U.S. Covid-19 Vaccination Rates? A Machine Learning Workflow for Ecological Inference"
+output:  
+  html_notebook:
+    toc: true
+    toc_float: true
+    number_sections: true
+bibliography: WhatExplainsUSCovid19VaccinationRates.bib
+---
+
+
+```{r}
+fromscratch=F
+
+knitr::opts_chunk$set(fig.width = 8, fig.height = 8, message=F, warning=F, echo=F, results=F)
+
+#Library Loads
+library(pacman)
+p_load(tidyverse)
+p_load(janitor)
+p_load(tidylog)
+p_load(stringr)
+p_load(ggdag)
+p_load(data.table)
+p_load(sf)
+p_load(glue)
+p_load(scales)
+options(tigris_use_cache = TRUE)
+```
+
+
+```{r}
+
+lhs <- arrow::read_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/lhs/lhs.parquet")
+
+lhs_people_partial_10  <- quantile((lhs$people_partial_mean_perc18plus), probs = 0.1, na.rm = T,names = TRUE, type = 7) %>% round(2)
+lhs_people_partial_25  <- quantile((lhs$people_partial_mean_perc18plus), probs = 0.25, na.rm = T,names = TRUE, type = 7) %>% round(2)
+lhs_people_partial_50  <- quantile((lhs$people_partial_mean_perc18plus), probs = 0.50, na.rm = T,names = TRUE, type = 7) %>% round(2)
+lhs_people_partial_75  <- quantile((lhs$people_partial_mean_perc18plus), probs = 0.75, na.rm = T,names = TRUE, type = 7) %>% round(2)
+lhs_people_partial_90  <- quantile((lhs$people_partial_mean_perc18plus), probs = 0.9, na.rm = T,names = TRUE, type = 7) %>% round(2)
+
+p_load(infotheo)
+lhs_people_partial_entropy <- entropy(discretize(lhs$people_partial_mean_perc18plus),method="emp")
+lhs_people_partial_entropy_bits <- natstobits(lhs_people_partial_entropy)
+
+p_load(latex2exp)
+p_load(ggridges)
+p_load(urbnmapr)
+states_sf <- get_urbn_map("states", sf = TRUE)
+counties_sf <- get_urbn_map("counties", sf = TRUE) %>% mutate(fips=county_fips %>% as.numeric())
+map_data <- left_join(counties_sf, lhs) 
+
+
+p_county_percent_fully_vaccinated_max <-
+                            ggplot( ) +
+                            geom_sf(data = map_data, aes(fill = people_partial_mean_perc18plus*100)) + #long, lat, group = group,
+                            geom_sf(data = states_sf, fill=NA ,  color = "black") +
+                            #coord_map(projection = "albers", lat0 = 38, lat1 = 60) +
+                            labs(fill = TeX("$Perc. (\\widetilde{Y}=44%)$")) +
+                            scale_fill_gradient2(midpoint=44) + xlab("") + ylab("") +
+                            theme(axis.title.x=element_blank(),
+                            axis.text.x=element_blank(),
+                            axis.ticks.x=element_blank()) +
+                            theme(axis.title.y=element_blank(),
+                            axis.text.y=element_blank(),
+                            axis.ticks.y=element_blank())
+
+p_state_density = map_data %>%
+                  mutate(state_abbv= state_abbv %>% fct_reorder(people_partial_mean_perc18plus, .fun = median)) %>%
+                  ggplot(aes(x =people_partial_mean_perc18plus*100, y = state_abbv, fill = stat(x))) +
+                  geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01, quantile_lines = TRUE, quantiles = 4) +
+                  scale_fill_gradient2(midpoint=37) + xlab("") + ylab("") + xlim(c(10,90))
+
+
+p_load(patchwork)
+p_final <- (
+p_state_density + theme(legend.position = "none") +
+p_county_percent_fully_vaccinated_max +
+  theme(legend.position = c(0.95, 0.15)))  + 
+  plot_layout(widths = c(1, 5)) +
+plot_annotation(
+title = 'At Least Partially Vaccinated/18+ Population by County (August 13, 2021)',
+subtitle = 'Mean Reported Across Vaccinetracking.us & CovidActNow',
+caption = 'Douglass et al. 2021'
+)
+ggsave(filename="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_vacination_uptake_by_county.png", plot = p_final , height=8, width=16)
+
+```
+
+
+
+# Introduction
+
+```{r, ref.label="lhs_summary_statistics", echo = FALSE}
+#We can bring variables created later into the process up here for referencing in the text
+```
+
+What explains variation in COVID-19 vaccination uptake across U.S. counties? By mid-2021, only 60% of Americans have been partially vaccinated against COVID-19. Vaccination uptake varies widely between counties (percentiles 10th=`r label_percent()(lhs_people_partial_10)`; 25th=`r label_percent()(lhs_people_partial_25)`; 50th=`r label_percent()(lhs_people_partial_50)`; 75th=`r label_percent()(lhs_people_partial_75)`; 90th=`r label_percent()(lhs_people_partial_90)`; entropy=`r lhs_people_partial_entropy_bits %>% round(2)` bits), and within and between states (Figure 1). Currently, there is a surplus of over 60 million vaccine doses that have been delivered but not yet administered [@cdcCOVIDDataTracker2020]. As of this writing, there have been at least 600 thousand COVID-19 deaths, cases are increasing again nationally, and forecast models expect thousands deaths in the coming weeks [@cdcCoronavirusDisease20192020]. Every percent increase in vaccine uptake has the potential to prevent thousands of deaths, tens of thousands of hospitalizations, and hundreds of thousands of infections [@bartschLivesCostsSaved2021]. Understanding the mismatch between available vaccine doses and unvaccinated communities is therefore an immediate health and welfare priority.
+
+```{r figure1, echo=FALSE, fig.cap="A caption", out.width = '100%', results='asis'}
+
+#You have to use results asis
+knitr::include_graphics(path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_vacination_uptake_by_county.png")
+
+```
+
+This article investigates possible data generating processes behind variation in U.S. vaccine uptake across counties. Our intended contributions are as follows: (1) A standardized benchmark for COVID-19 uptake that can be used to compare the performance of ours and other models; (2) A standardized cross-validation strategy for evaluating performance out of sample; (3) A synthesis of the existing literature on vaccine uptake into plausible data generating processes; (4) A high performing model that explains the majority of variation in vaccine uptake in the U.S.; and (5) Extensive ablation analysis that precisely highlights the importance of subsets of features.
+
+The article is organized into the following sectoins. The first section provides a brief literature review of comparable vaccine uptake projects for COVID-19 in the US. The next section defines the outcome, unit of analysis, and domain. We then describe out measurement strategy for vaccine uptake, and propose a train, validation, and test strategy. 
+
+# Current State of the Art
+
+We organize the research on vaccine uptake along the following lines. In this section we summarize only the most proximate literature on explaining COVID-19 vaccine uptake across U.S. geographic units, listed in Table 1. In the next section discussing our outcome, we review relevant measurement projects attempting to record uptake accurately. Finally in the section theorizing possible data generating processes for vaccine uptake we summarize the extensive literature on vaccine hesitancy, vaccine supply, previous vaccnie campaigns, etc. 
+
+```{r}
+
+p_load(googlesheets4)
+lit_review <- googlesheets4::read_sheet("https://docs.google.com/spreadsheets/d/1XGVatAyKU_oJyIW_JAuXsxw__gSm6g7ZLNfXQfqAfbE/edit?usp=sharing")
+
+```
+
+```{r, results="asis"}
+
+#Tom, or whoever, asis and or format='markdown' used to work for just putting cites directly in a tbale. I don't know why it doesn't work anymore, current theory is rnotebook doesn't like it and maybe bookdown or something else will
+lit_review %>% kableExtra::kable(format = "markdown")
+#require(huxtable)
+#lit_review %>% as_hux %>%
+#    set_caption("Hux table") 
+
+```
+
+The state of the art for explaining COVID-19 vaccine uptake across geographic units in the U.S. is poorly defined and incomplete. There is no accepted standard benchmark for comparing performance of competing explanations, each study picks their own subset of untis, time cut off, and data source on an ad hoc basis. With the exception of a very small literature attempting to forecast vaccine rates, this work is largely exploratory, focusing on whether a simple model places non-zero weight on a feature and reporting only in sample performance or ignoring performance all together. 
+
+Forecasting work projects known uptake rates some number of weeks into the future [@chernyavskiyCOVID19VaccineUptake2021]. They focus on a different question, what explains change in vaccine uptake over time, and so predict future values conditional not just on features but also past known values, whereas we seek to understand what previous features prior to the start why the entire vaccine roll out was more successful in some parts of the country than others.
+
+[@mishraCOVID19VaccineCoverage2021], predicts county level vaccine uptake using CDC data, with a multi-level linear model, fit to a hand engineered ranking indexes of 28 county measures organized into 5 themes (historic under-vaccination, sociodemographic barriers, resource-constrained healthcare system, healthcare accessibility barriers, and irregular care-seeking behavior). Their best performing model has an marginal $R^2$ of only 0.17, which while not directly comparable does illustrate the low starting baseline for accounting for uptake variation in the existing literature. [@stewartInequitiesVulnerableCommunities2021] fit multilevel models of uptake measured by COVIDcast weighted and find nonzero weights placed on COVID-19 Community Vulnerability Index but do not report performance.
+
+The next most direct work is descriptive 
+
+# Vaccine Uptake
+
+## Outcome, Performance Metric, Unit of Analysis, and Domain 
+
+Our outcome ($VaccineUptake$) is the number of persons at least partially vaccinated in each county ($Vaccinated$) divided by the over 18 population measured by the recent 2020 census ($Pop18+$). We choose this specific outcome instead of nearby alternatives such as fully vaccinated, or percent of eligible population, for several reasons. First, our substantive practical interest is in why some Americans who are not currently vaccinated might become vaccinated in the near future. Those that receive one dose are likely to receive the second, those that don't are at least have partially immunity, and for measurement purposes some vaccines such as Johnson & Johnson only require one dose and constitute fully vaccinated. Second, eligibility criteria is endogenous to uptake across groups first in line and in any case nearly uniform across states now. We choose the denominator of 18 plus population because it is much more accurately measured in the recent 2020 census release than 12 plus population based on extrapolations from the 2010 census and because vaccination for children 12 to 18 is still much more uncommon in the U.S.
+
+We choose out of sample root mean squared error (RMSE) as our performance metric $L(\hat{VaccineUptake_{oob}}, VaccineUptake_{oob})$.
+
+We limit our domain to the continental United States, excluding Alaska, Hawaii, and island territories because of their unique logistical constraints in vaccine distribution. Our unit of analysis is the U.S. county at a single time point, July 1, 2021. Counties are the smallest dissagregation available for the entire U.S. as zip-code level data is available for a few states, and cross-unit measurement error encountered already at the county level make us dubious about zooming in with current data.
+
+
+## Measurement Strategy
+
+Our measurement strategy is based on official statistics compiled by county and state health departments, further aggregated into a national panel by third parties. We consider four national panels compiled by the CDC [@COVID19VaccinationsUnited], Vaccinetracking.us [@Data], CovidActNow [@DataDefinitionsCovid], and the USA Today News Network. For a random sample of counties and a number outliers, we compared these national panels to direct reporting on state and county websites. We concluded that there are sources of measurement error (see Appendix 1), that necessitate aggregating across panels, taking the mean uptake for each county ($c$) reported, $Y_c=mean_c(Vaccinetracking.us_c, CovidActNow_c)$. We use $USAToday_c$ which tracks only completed vaccination as a check for outliers, and we exclude $CDC_c$ entirely do to extraordinary missingness and underreporting. 
+
+There are at least three main measurement error concerns that we are aware of. The first is that states/counties either fail to report or national panels fail to pull correct counts for a non-random subset of states and counties. This error was most pronounced in the CDC panel and make it inappropriate for this kind of analysis, despite being the most relied upon source in the literature. Second, there is reporting error by state that fails to correctly record home county of the individual, either missing the information entirely or incorrectly attributing it to the county where the vaccine was administered. Of the panels, only CovidActNow explicitly attempts to correct for entirely missing county records due to policy in a handful of states. Together, we find the biggest threat to measurement to come from under-reporting rather than over-reporting. The most likely possible negative consequences of our decision to take the maximum across sources is to attenuate variation between neighboring counties and to replace ad-hoc measurement failure with ad-hoc imputation by CovidActNow for a handful of states. We find both risks greatly preferable to the known problems with the data as is, and we mitigate them in our modeling strategy. The third is county data do not consistently take into account doses administered through federal sources, e.g. Department of Defense, Veterans Affairs, Homeland Security, etc. Here too we attempt to mitigate this with features that measure military and veteran presence as well as in the case of the VA, counts of doses administered by installation in a given county.
+
+
+<!-- https://www.washingtonpost.com/graphics/2020/health/covid-vaccine-states-distribution-doses/ -->
+<!-- Doses are also being distributed to the Defense Department, State Department, Department of Veterans Affairs, Federal Bureau of Prisons, Department of Homeland Security and Indian Health Service. On Feb. 19, the CDC altered its reporting of doses being administered by the Department of Defense, Bureau of Prisons, Indian Health Service and Veteran’s Health Administration. The CDC added the shots given by those agencies to the states where the shots had been given. It didn’t change the national total, but it added two million shots to various state totals. The shots had been administered over two-and-a-half months, but they were all reported on Feb. 19, causing large one-day increases in Virginia, New Mexico, North Dakota, Texas, Massachusetts, Connecticut and other states. -->
+
+## Train, Validation, and Test Strategy
+
+Our goal is to decompose observed vaccine uptake into an unmeasured error component and a measured data generating processes orthogonal to the error component whose contribution comes only through the features. We further want to evaluate many possible data generating processes. These goals are challenging for observational social science data and require specific inferential strategies. 
+
+One challenge is that our data are a one-time collection, we cannot inductively form hypotheses and then requisition a new batch of data from the same data generating process (DGP) to evaluate them. We therefore need to partition the data in hand into a training split where we fit models, a validation split where we refine those models inductively, and a final test split where we evaluate our final decisions and ideas. Our confidence in a possible DGP being the true one is in how well it generalizes to new unseen draws from the same process. From an information theoretic perspective, we desire a compact representation that removes idiosyncratic information leaving only information that generalizes to any draws from the DGP. This is in contrast to the typical practice in the social sciences of making strong theoretical assumptions about the DGP and then providing evidence in the form a nonzero weight placed on a feature by a model fit to in sample data. That practice is inappropriate here because we desire to explain variation in vaccine uptake, we don't have strong prior beliefs on the role of any single feature, a non zero weights assigned by a model is not strong evidence that a particular feature is important [@bzdokInferencePredictionDiverge2020], repeated testing of the same in sample data quickly diminishes information learned by each of that kind of test [@thompsonDatasetDecayProblem2020a], considering more than a few features quickly diminishes the intended interpretation of those weights [@achenLetPutGarbageCan2005], and any sufficiently flexible functional form makes simply memorizing a dataset trivial.
+
+A second challenge is that our data are not independent and identically distributed (IID) draws from the same DGP, which reduces the amount of unique information available and makes selection of splits difficult [@robertsCrossvalidationStrategiesData2017]. Our county observations are administratively correlated at the state level at a minimum through vaccine distribution strategies and data reporting mechanisms. Our county observations are at a minimum spatially correlated through transportation logistics, flow of vaccine seekers from one county to another, and reporting error assigning some vaccinations to the location it was administered and not the home address of the person. Training on a county and then testing on its immediate neighbor may end up memorizing local geographic patterns rather than the actual role of features.
+
+Our train, validation, and test strategy is based on consensus features within nested cross-validation [@parvandehConsensusFeaturesNested2020]. We split our county data along state lines into 6 large geographically contiguous regions shown in Figure 1. We choose regions by hierarchically clustering states based on total human interstate travel between each pair of states in 2019 measured by cell phone locations collected by SafeGraph [@kangMultiscaleDynamicHuman2020]. An outer loop withholds a region as a test set which is only used for making out of sample predictions, never training. An inner loop fits a model 5 times in 5 folds cross-validation, each iteration training on 4 regions and predicting on 1 validation region. This cross-validation step allows us to choose model hyper-parameters, most important of which is which features to include in the final model.
+
+
+
+```{r figure 2, fig.width = 6, fig.height = 4, result=T}
+
+states_sf_tigris_continental <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/states_sf_tigris_continental.Rds")
+
+p_test_folds <- states_sf_tigris_continental  %>%
+  ggplot(aes(fill = fold  )) +
+  geom_sf() + 
+  ggtitle("6 Test Fold Splits") #+ xlim(c(NA,-50)) + ylim(c(20,50))
+#p_test_folds
+
+ggsave(filename="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_test_folds.pdf", plot = p_test_folds , height=8, width=16)
+
+```
+
+
+```{r figure2, echo=FALSE, fig.cap="A caption", out.width = '50%', results='asis'}
+
+#I don't know
+#knitr::include_graphics(path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_test_folds.pdf")
+
+p_test_folds
+
+```
+
+Our feature selection strategy proceeds in three steps. First, our modelling technology is gradient boosted trees (GTB) which is a greedy algorithm that iteratively includes features until a condition is met. This immediately prunes most features that are never selected in any of the folds. Second, we subset to consensus features that are chosen in at least 3 of the 5 CV folds further reducing to just features that found broad geographic support. Our final step is to drop features which do not improve out of sample CV performance. Directly checking the performance of every subset is intractable ($k!$ many possible subsets), and so we rank order features by suspected importance and test the $k$ number of cumulative sets. Our measure of importance is the LossSHAP value which is the change in residuals on the hold out validation set when we subtract off the marginal contribution of each feature [@lundbergLocalExplanationsGlobal2020]. This criteria is most directly relevant to the outcome we care about, performance on unseen out of sample data, and allows for the possibility of negative importance where a feature leads to over-fitting and doesn't generalize.
+
+We then finalize our feature and hyper parameter selection, fit a single model to the full data of all 5 training folds, and make a single out of sample prediction on the remaining test fold. By doing this full procedure separately for each of the 6 folds, we produce full out of bag predictions for every county in the U.S. The results can be directly interpreted as the amount of out of sample performance in predicting vaccine uptake that can be purchased with a given set of features and fixed regularization budget. How useful a feature is can be interpreted directly in terms of how much unique performance it buys, and its role in the DGP can be interrogated via the functional form chosen across all of the individual models.
+
+
+```{r algorithm1, echo=F, tidy=FALSE, eval=FALSE, highlight=FALSE }
+procedure ConsensusFeaturesCV( Y, X, folds)
+  
+  for i in folds
+    remaining_folds <- folds - i
+    m = |folds|/2
+    for j in remaining_folds
+      training_folds <- remaining_folds - j
+      F_j <- GradientBoostedTrees(Y|X, training_folds)
+      selected_features_j <- features where importance_scores(F_j)>0
+    features_consensus = #(features ∈ features_used_j) >= m
+    
+      
+    
+  
+```
+
+
+## Identification Strategy, Placebo Comparisons, and Feature Evaluation
+
+Our research design is purely observational, we make no claim to exogeneity, nor do we believe that even our large number of features 'control' for relevant confounding. Instead, our strategy is an information theoretic one, to propose and rigorously evaluate compact representations that potentially generalize to more draws from the same data generating process. We supplement this with placebo analysis to determine to what degree a representation is uniquely good for our outcome of vaccine uptake relative to other similar but unrelated outcomes [@eggersPlaceboTestsCausal2021]. We therefore consider a feature 'important' if it meets the following criteria (1) it greatly improves the ability to predict the outcome in out of sample observations (2) that improvement is unique to that feature, and cannot be easily reconstruct through other features that do not share the same theoretical interpretation, and (3) that improvement is unique to our outcome. Features that meet all three criteria suggest further research using either more appropriate individual level data or an experimental design with plausible causal identification. Features that do not may still be part of the true data generating processes, but were not distinguished in the crude data available here.
+
+# Potential Data Generating Processes of Vaccine Uptake
+
+## Historical Background
+
+COVID-19 vaccinations began in the U.S. on December 14, 2020 [@affairsaspaCOVID19VaccineDistribution2020]. The U.S. Food and Drug Administration issued an emergency use authorization (EUA) for persons 16 years or older in December, 2020 which it expanded to 12 and older in May, 2021. The majority of vaccinations given in the U.S. are the two dose sequence by Pfizer, followed by Moderna, and then to a much smaller degree the single dose Johnson and Johnson which was briefly paused in April, 2021. The number of vaccinations given per day increased nearly monotonically before peaking nationally in mid-April at over 3 million doses per day, and then declining to a nadir of about half a million doses per day in July. With the advent of the SARS-CoV-2 Delta variant and a fourth wave of cases in the U.S. vaccination rates are beginning to increase again albeit much more slowly. 
+
+## Potential Data Generating Process and Feature Proposals
+
+```{r}
+
+library(huxtable)
+library(tidyverse)
+
+x_all <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train.Rds")
+rhs_codebook_total_coded$variable_clean <- rhs_codebook_total_coded$variable %>% janitor::make_clean_names() 
+setdiff(rhs_codebook_total_coded$variable_clean, colnames(x_all)) %>% length()
+setdiff(colnames(x_all), rhs_codebook_total_coded$variable_clean ) %>% length()
+
+rhs_codebook_total_coded <- read.csv(file="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/rhs_codebook_total_coded.csv") %>% 
+                             janitor::clean_names() %>% 
+                             mutate(variable_clean = variable %>% janitor::make_clean_names() ) %>%
+                             filter(variable_clean %in% colnames(x_all)) %>%
+                             dplyr::select(-variable_short, -variable_short_group, -description_stemmed)
+dim(rhs_codebook_total_coded)
+colSums(rhs_codebook_total_coded[,-1], na.rm=T) %>% sort()
+
+table(rhs_codebook_total_coded$dataset)
+
+```
+
+We propose a data generating process for reported vaccine uptake that is a function of vaccine demand, vaccine supply, and institutional reporting mechanisms. We consider `r comma_format()(x_all %>% ncol())` features, drawn from `r rhs_codebook_total_coded$dataset %>% unique %>% length` data sets, which we organize roughly into `r rhs_codebook_total_coded %>% ncol()-3` non-exclusive topics.
+
+```{r}
+
+temp <- rhs_codebook_total_coded %>% dplyr::select(-variable,-variable_clean) %>% group_by(dataset) %>% dplyr::summarise_all(max) %>% t()
+temp %>% write.csv("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/rhs_topics_vs_datasets.csv")
+
+```
+
+
+## Supply Side
+
+Before May 10, 2021 vaccines were allocated in a tiered system allocating lots across states (based on their total adult population) and federal agencies, who in turn chose health departments, hospitals, and retail pharmacies [@COVID19VaccineAllocations]. After May 10, individual locations could order vaccines directly from the supplier. States issued tiered eligibility schedules that prioritized elderly, healthcare workers, essential workers, etc. States and cities further prioritized demographic and economic groups sometimes at the leve of individual zip codes [@schmidtEquitableAllocationCOVID192021].
+
+
+We consider a data generating process for reported vaccinations that is a function of institutional reporting mechanisms, vaccine supply, and vaccine demand. Vaccine demand is defined here as the number of vaccines that would be administered given unconstrained supply. When supply is constrained in any way, or imperfectly measured, then demand is only partially observed to be at least as much as the given supply but possibly much higher. Likewise, vaccine supply is defined here as the number of vaccines that would be administered given unconstrained demand. With perfect demand and measurement, any unused vaccines provide an upper bound on possible demand. Institutional reporting mechanisms are the process by which actual vaccine uptake is mapped into publicly reported records. As demonstrated above, institutional measurement error of health outcomes has systematic nonrandom sources of error. In some cases those systematic components may be an even larger part of the data generating process than the underlying empirical data generating process we actually care about.
+
+Age elgibility leads to major differences [@pathakPopulationAgeIneligibleCOVID192021]
+
+
+idiosyncratic state policies
+religious exemption
+https://www.tennessean.com/story/news/politics/2021/03/31/covid-19-vaccination-religious-exemptions-during-public-health-crisis-advance-senate/4825721001/
+Parental exemption for teenagers
+https://www.tennessean.com/story/news/health/2021/07/12/tennessee-fires-top-vaccine-official-covid-19-shows-new-spread/7928699002/
+
+VaxMap 2.0 Number of facilities and driving distance to a facility [@zotero-36198]
+
+
+## Demmand Side
+
+Vaccinations per day increased week on week, peaking to average of 3 million per day in early April, and now tapering to about half a million per day.
+
+The most proximate measure of demand available is survey self reported
+desire to receive a vaccine. The COVID-19 Trends and Impact Survey
+(CTIS) run by the Delphi group at Carnegie Mellon in partnership with
+Facebook
+
+[@barkayWeightsMethodologyBrief2020] We propose to measure demand most
+directly with survey questions of self reported desire for a
+vaccination.
+
+
+
+Predictors of willingness to get a COVID-19 vaccine in the U.S
+<https://bmcinfectdis.biomedcentral.com/articles/10.1186/s12879-021-06023-9>
+[@kellyPredictorsWillingnessGet2021]
+
+<https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7993557/>
+[@hughesCountyLevelCOVID19Vaccination2021]
+
+
+
+
+social vulnerability [@hughesCountyLevelCOVID19Vaccination2021]
+
+
+
+
+
+https://aspe.hhs.gov/pdf-report/vaccine-hesitancy
+
+The most proximate measure of demand available is survey self reported desire to receive a vaccine. COVID-19 Trends and Impact Survey (CTIS) run by the Delphi group at Carnegie Mellon [@barkayWeightsMethodologyBrief2020]
+We propose to measure demand most directly with survey questions of self reported desire for a vaccination. 
+
+
+
+typically referred to as vaccine hesitancy,
+
+[@truongWhatFactorsPromote2021]
+
+[@pittsHealthLiteracyCommon2021]
+
+
+https://www.va.gov/vetdata/veteran_population.asp
+Vertans per county
+https://www.va.gov/vetdata/veteran_population.asp
+
+
+
+[@brownCOVID19VaccinationRates2021]
+
+
+
+Large scale cross-national polling of vaccine confidence [@figueiredoMappingGlobalTrends2020].
+
+Same features also predict deaths [@ruckEarlyWarningVulnerable2021]
+
+features continue to be important at the subcounty neighborhood level [@leiHyperFocusingLocal2021]
+
+Download Options
+Covid-19 Vaccination Provider Locations in the United States
+
+
+

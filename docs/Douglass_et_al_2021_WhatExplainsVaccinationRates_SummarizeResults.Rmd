@@ -1,0 +1,365 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+
+#devtools::install_github(repo="haozhu233/kableExtra", ref="a6af5c0") #you have to install this specific version of kableextra
+#This says rvest might have broke it https://github.com/haozhu233/kableExtra/issues/595
+
+library(tidyverse)
+library(kableExtra)
+library(tidyverse)
+
+restartspark <- function(){
+  #devtools::install_github("rstudio/sparklyr")
+  #devtools::install_github("rstudio/sparklyr")
+  #install.packages('sparklyr') #rolling back to the stable version
+  library(sparklyr)
+  #spark_available_versions()
+  #spark_installed_versions()
+  #spark_uninstall(version="3.0.1", hadoop_version="3.2")
+  #spark_uninstall(version="2.4.3", hadoop_version="2.7")
+  #oh interesting the default is spark 2.4.3 I wonder why that is
+  #Error: Java 11 is only supported for Spark 3.0.0+
+  #spark_install("3.0") #3.1.1 is currently the latest stable, but 3.0 is the latest available
+  
+  #library(geospark)
+  #library(arrow)
+  mem="160G"
+  try({spark_disconnect(sc)})
+  conf <- spark_config()
+  #conf$`sparklyr.cores.local` <- 128
+  #https://datasystemslab.github.io/GeoSpark/api/sql/GeoSparkSQL-Parameter/
+  conf$spark.serializer <- "org.apache.spark.serializer.KryoSerializer"
+  #conf$spark.kryo.registrator <- "org.datasyslab.geospark.serde.GeoSparkKryoRegistrator"
+  #conf$spark.kryoserializer.buffer.max <- "2047MB" #Caused by: java.lang.IllegalArgumentException: spark.kryoserializer.buffer.max must be less than 2048 mb, got: + 10240 mb.
+  #https://github.com/DataSystemsLab/GeoSpark/issues/217
+  #conf$geospark.global.index <- "true"
+  #conf$geospark.global.indextype <- "quadtree"
+  #conf$geospark.join.gridtype <- "kdbtree"
+  #conf$spark.sql.shuffle.partitions <- 1999 #https://github.com/DataSystemsLab/GeoSpark/issues/361 #setting to just under 2k so compression doesn't kick in, don't need to lower the memory footprint
+  conf$spark.driver.maxResultSize <- "100G"
+  conf$spark.memory.fraction <- 0.9
+  conf$spark.storage.blockManagerSlaveTimeoutMs <-"6000000s" #Failed during initialize_connection: java.lang.IllegalArgumentException: requirement failed: spark.executor.heartbeatInterval should be less than or equal to spark.storage.blockManagerSlaveTimeoutMs
+  conf$spark.executor.heartbeatInterval <-"6000000s"# "10000000s"
+  conf$spark.network.timeout <- "6000001s"
+  conf$spark.local.dir <- "/mnt/8tb_b/spark_temp/"
+  conf$spark.worker.cleanup.enabled <- "true"
+  conf$"sparklyr.shell.driver-memory"= mem
+  conf$'spark.driver.maxResultSize' <- 0 #0 is ulimmited
+  
+  conf$'spark.sql.legacy.parquet.datetimeRebaseModeInRead' <- 'LEGACY'
+  conf$'spark.sql.legacy.parquet.datetimeRebaseModeInWrite' <- 'LEGACY'
+  
+  conf$'spark.sql.execution.arrow.maxRecordsPerBatch' <- "5000000" #https://github.com/arctern-io/arctern/issues/399
+  
+  #Error: org.apache.spark.sql.AnalysisException: The pivot column variable_clean has more than 10000 distinct values, this could indicate an error. If this was intended, set spark.sql.pivotMaxValues to at least the number of distinct values of the pivot column.;
+  conf$'spark.sql.pivotMaxValues' <- "5000000"
+  
+  sc <<- spark_connect(master = "local", config = conf#,
+                       #version = "2.3.3" #for geospark
+  ) 
+}
+
+restartspark()
+
+
+```
+
+
+```{r}
+
+
+yid_test <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results/performance/" ,memory=F) 
+
+errors_ablation_fold <- yid_test %>% collect() %>% group_by(ablation, fold) %>% summarise(rmse=Metrics::rmse(y_share18plus,y_hat_test_pruned_optimized), mae=Metrics::mae(y_share18plus,y_hat_test_pruned_optimized) )
+errors_ablation <- yid_test %>% collect() %>% group_by(ablation) %>% summarise(rmse=Metrics::rmse(y_share18plus,y_hat_test_pruned_optimized), mae=Metrics::mae(y_share18plus,y_hat_test_pruned_optimized) )
+
+performance_ablation <- yid_test %>% collect() %>% group_by(ablation) %>% summarize(rmse_y_hat_test=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), rae_y_hat_test=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+#performance_ablation %>% View()
+performance_ablation %>% ggplot(aes(x=ablation %>% as.factor(), y=rmse_y_hat_test)) + geom_point() + coord_flip()
+performance_ablation %>% ggplot(aes(x=ablation %>% as.factor(), y=rae_y_hat_test)) + geom_point() + coord_flip()
+
+residuals <- yid_test %>% dplyr::select(ablation, fips, y_share18plus, y_hat_test_pruned_optimized) %>% collect() %>% mutate(residual=y_hat_test_pruned_optimized-y_share18plus) %>% mutate(fips_state = round(fips/1000 ))
+
+residuals_state <- residuals %>% group_by(ablation, fips_state) %>% summarise(residual=mean(residual))
+
+residuals_state_diff <- residuals_state %>% 
+                         left_join(residuals_state %>% mutate(ablation=ablation-1) %>% rename(residual_withoutinfo=residual) ) %>% 
+                         mutate(state_residual_change_from_adding_info= round(abs(residual)-abs(residual_withoutinfo),4) ) #make sure you point this the right direction because error is bad
+
+states_sf_tigris_continental <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/states_sf_tigris_continental.Rds") %>%
+  janitor::clean_names() %>% mutate(fips_state=statefp %>% as.numeric() )
+
+for(i in (unique(residuals_state_diff$ablation )-1 )  ){
+  p_test_folds <- 
+    states_sf_tigris_continental  %>%
+    left_join(residuals_state_diff %>% filter(ablation==i)) %>%
+    ggplot(aes(fill = state_residual_change_from_adding_info  )) +
+    geom_sf() + 
+    #ggtitle("1") +
+    scale_fill_gradient2("Changes\nMAE",midpoint=0, trans="reverse") + xlab("") + ylab("") +
+    theme_bw() + 
+    theme(legend.position = c(0.90, 0.25)) +
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank()) +
+    theme(axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank())
+  p_test_folds
+  
+  ggsave(filename=glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_ablation_states_{i}.png"), plot = p_test_folds , height=6, width=12)
+  
+}
+
+  i=residuals_state_diff$ablation %>% max()
+  p_test_folds <- 
+    states_sf_tigris_continental  %>%
+    left_join(residuals_state_diff %>% filter(ablation==i)) %>%
+    mutate(state_residual_change_from_adding_info=NA)  %>%
+    ggplot(aes(fill = state_residual_change_from_adding_info  )) +
+    geom_sf() + 
+    #ggtitle("1") +
+    scale_fill_gradient2("Changes\nMAE",midpoint=0, trans="reverse") + xlab("") + ylab("") +
+    theme_bw() + 
+    theme(legend.position = c(0.90, 0.25)) +
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank()) +
+    theme(axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank())
+  p_test_folds
+  
+  ggsave(filename=glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_ablation_states_{i}.png"), plot = p_test_folds , height=6, width=12)
+  
+
+```
+
+
+
+
+```{r}
+
+restartspark()
+treeshap_all <- spark_read_parquet(sc, name="treeshap_all",path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results/shap/" ,memory=F) 
+sdf_nrow(treeshap_all)
+treeshap_all %>% head()
+
+#4 causes the first error, 5 too, 6 too
+
+number_features <- treeshap_all %>%
+                   dplyr::select(ablation, test_fold,variable) %>%
+                   sdf_distinct() %>%
+                   count(ablation, test_fold) %>%
+                   collect() %>%
+                   group_by(ablation) %>%
+                   summarise(feature_count_min=min(n), feature_count_mean=mean(n), feature_count_max=max(n))
+
+used_vars_df <- treeshap_all %>% 
+  dplyr::group_by(ablation, k_smallest, variable) %>% 
+    summarise(shap_variable_total= shap %>% abs() %>% sum() ) %>%
+  dplyr::group_by(ablation,  k_smallest) %>% 
+    mutate(shap_cluster_total=shap_variable_total %>% abs() %>% sum()) %>%
+  ungroup() %>%
+  #filter(shap_cluster_total==max(shap_cluster_total)) %>% 
+  dplyr::arrange(ablation,shap_cluster_total %>% desc(),shap_variable_total %>% desc() ) %>%
+  collect()
+
+rhs_codebook_total_clustered <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_codebook_total_clustered.Rds")
+
+
+top_5_vars_by_abblation <- used_vars_df %>% group_by(ablation) %>% slice_head(n = 5) %>%
+  filter(shap_cluster_total==max(shap_cluster_total)) %>%
+  left_join(rhs_codebook_total_clustered %>% dplyr::select(variable=variable, description  )) %>%
+  mutate(description_clean = description %>%
+           str_replace_all("_",' ') %>% 
+           str_replace_all("donaldjtrump 2020",'Trump Vote AAAA') %>%
+           str_replace_all("donaldtrump 2016",'Trump Vote BBBB') %>%
+           str_replace_all("[0-9]{4}",'') %>% 
+           str_replace_all("AAAA",'2020') %>%
+           str_replace_all("BBBB",'2016') %>%
+           str_replace_all("perc$|perc |percent of |per capita |percent ",'') %>% 
+           str_replace_all("percap",'') %>% 
+           str_replace_all("change in people ",'Δ ') %>% 
+           str_replace_all("\\(.*?\\)",' ') %>% 
+           str_replace_all("--total number of adherents",' ') %>% 
+           str_replace_all(" years and over",'<') %>% 
+           str_replace_all(" under ",'≥') %>% 
+           str_replace_all("  ",' ') %>% 
+           str_replace_all(" ,",',') %>%
+           trimws()
+         )
+#top_5_vars_by_abblation %>% View()
+
+
+#install.packages('formattable')
+library(formattable)
+top_5_vars_by_abblation %>% 
+  mutate(shap_variable_total =  color_bar("lightgreen")(shap_variable_total %>% round())  ) %>%
+  dplyr::select(ablation,k_smallest,description_clean,shap=shap_variable_total) %>%
+  mutate(ablation=ablation %>% as.character()) %>%
+  mutate(k_smallest=k_smallest %>% as.character()) %>%
+  
+  kbl(format='html',booktabs = TRUE, longtable = TRUE, escape = F, align = 'c' ) %>% #
+  column_spec(3, width = "10cm" ) %>%
+  column_spec(4, width = "1cm" ) %>%
+  collapse_rows(columns = 1:2, valign = "top")
+
+  
+
+
+```
+
+
+Feature shapes
+
+```{r}
+
+
+shap_by_covariate <- treeshap_all %>% 
+                      dplyr::select(ablation, variable, covariate_value, shap) %>%
+                        right_join(top_5_vars_by_abblation, copy=T) %>%
+                      #mutate(covariate_value_scaled_rounded=round(covariate_value_scaled, 1)) %>% 
+                      #group_by(ablation, variable, covariate_value_scaled_rounded) %>%
+                      #summarise(shape_mean=mean(shap)) %>% 
+                      collect()
+dim(shap_by_covariate) #8,748,504
+
+top_5_shap_by_covariate <- 
+shap_by_covariate %>%
+  arrange(ablation, shap_cluster_total %>% desc() ) %>%
+  mutate(shap_variable_total_rank = (-1*shap_variable_total) %>% as.factor() %>% as.numeric() ) %>%
+  mutate(ablation_rank= ablation*1000 +  shap_variable_total_rank) %>%
+  mutate(ablation_variable_i =  ablation_rank %>% as.factor()  %>% as.numeric() ) %>%
+  arrange(ablation_variable_i)
+  #dplyr::select(ablation,variable,shap_variable_total_rank) %>% distinct()
+
+for(i in unique(top_5_shap_by_covariate$ablation_variable_i)){
+  
+  p <- top_5_shap_by_covariate %>% 
+        dplyr::filter(ablation_variable_i==i) %>% 
+        ggplot(aes(x=covariate_value %>% scale(),y=shap)) +
+        #geom_point() + 
+        geom_quantile(method = "rqss", lambda = 0.1, quantiles = c(0.05, 0.95), na.rm=T, linetype=c('solid'), color="black", size=0.25) +
+        geom_quantile(method = "rqss", lambda = 0.1, quantiles = c(0.5), na.rm=T, linetype=c('solid'), color="black") +
+        theme_void() + 
+        geom_hline(yintercept=0, linetype="dashed", color = "blue", size=0.25) + 
+        geom_vline(xintercept=0, linetype="dashed", color = "blue", size=0.25)
+    
+  ggsave(filename=glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_ablation_marginal_fx_{i}.png"),
+         plot = p , height=0.5, width=1)
+}
+
+#top_5_shap_by_covariate <- shap_by_covariate %>%
+#                            arrange(ablation, shap_cluster_total %>% desc(),
+#                                    shap_variable_total %>% desc(),covariate_value_scaled_rounded) %>%
+#                            mutate(groups=paste0(ablation,variable))
+#top_5_shap_by_covariate_list <- split(top_5_shap_by_covariate$shape_mean,top_5_shap_by_covariate$groups)
+
+```
+
+
+```{r, eval=F}
+#depricated now
+#, results="asis"
+#of O remder to html it works but not other scenario
+library(tidyverse)
+library(kableExtra)
+setwd("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs")
+library(here)
+
+
+  #kable_styling(latex_options = c("hold_position", "repeat_header"), bootstrap_options = c('striped')) %>%
+
+  #column_spec(5, 
+  #            image = spec_image(
+  #                #You have to knit to html and you have to use the file:/// prefix or it all breaks
+  #                sapply(performance_ablation$ablation, FUN=function(i) glue::glue("file:///mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_ablation_states_{i}.png" )),
+  #                400, 200)
+  #           ) %>%
+  #column_spec(3, width = "10cm" ) %>%
+
+
+performance_ablation %>% 
+  left_join(number_features %>% dplyr::select(ablation,feature_count_mean)) %>%
+  dplyr::select(Round=ablation , RMSE=rmse_y_hat_test , MAE=rae_y_hat_test, Features=feature_count_mean ) %>%
+  
+  mutate(Features= round(Features,0)) %>%
+  
+  mutate(RMSE= round(RMSE*100,2 )) %>%
+  mutate(MAE= round(MAE*100,2 )) %>%
+  mutate(MAE_Delta ="") %>%
+  
+  #mutate(RMSE =  color_bar("orange")(RMSE  )  ) %>% #too close doesn't look good
+  #mutate(MAE =  color_bar("blue")(MAE )  ) %>%
+  kbl(format='html',booktabs = TRUE, longtable = TRUE, escape = F) %>% #, align = 'c'
+  kable_paper(full_width = F) %>%
+  kable_styling(latex_options = c("hold_position", "repeat_header"), bootstrap_options = c('striped')) %>%
+
+  column_spec(5, 
+              image = spec_image(
+                  #You have to knit to html and you have to use the file:/// prefix or it all breaks
+                  sapply(performance_ablation$ablation, FUN=function(i) glue::glue("file:///mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_ablation_states_{i}.png" )),
+                  400, 200)
+             ) %>%
+  column_spec(6, image = spec_plot(mpg_list, same_lim = TRUE)) %>%
+```
+
+Combine the two tables
+
+```{r}
+
+temp<- 
+performance_ablation %>% 
+  left_join(number_features %>% dplyr::select(ablation,feature_count_mean)) %>%
+  left_join(
+    top_5_vars_by_abblation %>% 
+        dplyr::select(ablation,k_smallest,description_clean,shap=shap_variable_total)
+  ) %>%
+  mutate(MAE_Delta ="") %>%
+  dplyr::select(ablation , rmse_y_hat_test , rae_y_hat_test, feature_count_mean, MAE_Delta, description_clean, shap) %>%
+  mutate(feature_count_mean= round(feature_count_mean,0)) %>%
+  mutate(rmse_y_hat_test= round(rmse_y_hat_test*100,2 )) %>%
+  mutate(rae_y_hat_test= round(rae_y_hat_test*100,2 )) %>%
+  mutate(shap= round(shap )) %>%
+  #Alternatively there's a markdown way to do this
+  #https://www.titanwolf.org/Network/q/a471f9e2-3921-4292-bd69-467a36114657/y
+  mutate(MAE_Delta= sprintf("![](%s)", 
+                          sapply(top_5_vars_by_abblation$ablation, FUN=function(i) glue::glue("file:///mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_ablation_states_{i}.png" )) )  ) %>%
+  #mutate(RMSE =  color_bar("orange")(RMSE  )  ) %>% #too close doesn't look good
+  #mutate(MAE =  color_bar("blue")(MAE )  ) %>%
+  mutate(MarginalFX=glue::glue("![](file:///mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_ablation_marginal_fx_{row_number()}.png)"))  
+dim(temp)
+
+#ggsave(filename=glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_ablation_marginal_fx_{i}.png"), plot = p , height=0.5, width=1)
+
+
+```
+
+```{r, result="asis"}
+
+#Lol it's because it's identical so it collapsed them. Those rmse and mae aren't missing they're collapsed bc identical
+temp %>%
+  kbl(format='html', padding=0 ,
+      booktabs = TRUE,
+      longtable = TRUE, 
+      escape = F,
+      align = c('l', 'c', 'c', 'c', 'c', 'l', 'c'), 
+      col.names = c("", "RMSE", "MAE", "Feat.","Δ MAE by St.","Feature","Shap","Marginal Fx.")
+      ) %>% 
+  kable_paper("striped", full_width = F) %>%
+  kable_styling(bootstrap_options="condensed") %>%
+  row_spec(row=0, angle = 0, align='l', hline_after=T) %>%
+  add_header_above(c(" " = 1, "Model Performance (Cumulative Ablation of Top Performing Feature Clusters)" = 4, "Feature Performance (Top Cluster)" = 3)) %>%
+  column_spec(5, width = "4cm" )  %>%
+  column_spec(8, width = "1cm" )  %>%
+  #column_spec(8, image = spec_plot(top_5_shap_by_covariate_list, same_lim = F)) %>%
+  collapse_rows(columns = 1:5, valign = "top") 
+
+```

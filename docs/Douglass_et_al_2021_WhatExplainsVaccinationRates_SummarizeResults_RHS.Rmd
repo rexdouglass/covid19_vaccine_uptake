@@ -1,0 +1,94 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+#install.packages("huxtable")
+library(huxtable)
+library(tidyverse)
+
+x_all <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train.Rds")
+rhs_codebook_total_coded$variable_clean <- rhs_codebook_total_coded$variable %>% janitor::make_clean_names() 
+setdiff(rhs_codebook_total_coded$variable_clean, colnames(x_all)) %>% length()
+setdiff(colnames(x_all), rhs_codebook_total_coded$variable_clean ) %>% length()
+
+rhs_codebook_total_coded <- read.csv(file="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/rhs_codebook_total_coded.csv") %>% 
+                             janitor::clean_names() %>% 
+                             mutate(variable_clean = variable %>% janitor::make_clean_names() ) %>%
+                             filter(variable_clean %in% colnames(x_all)) %>%
+                             dplyr::select(-variable_short, -variable_short_group, -description_stemmed)
+dim(rhs_codebook_total_coded)
+colSums(rhs_codebook_total_coded[,-1], na.rm=T) %>% sort()
+
+table(rhs_codebook_total_coded$dataset)
+
+```
+
+```{r}
+
+df_clustered_thinned <- readRDS('/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/df_clustered_thinned.Rds')
+df_clustered_thinned_ht <- as_hux(df_clustered_thinned) %>% theme_compact()  #%>% set_all_borders(brdr(0.0, "solid", "red")) #ok that's not the spacing
+
+for(i in 1:ncol(df_clustered_thinned_ht) ) { #start on row 2 because 1 is the columns
+  #print(i)
+  groups <- apply(df_clustered_thinned[1:nrow(df_clustered_thinned) ,1:i] %>% as.matrix() ,1, paste0, collapse="_")  #Have to use the original
+  groups_unique <- groups %>% unique()
+  for(g in groups_unique ){
+      start <- (which(groups==g) %>% min())+1
+      end <- (which(groups==g) %>% max())+1
+      series <- start:end
+      df_clustered_thinned_ht <- df_clustered_thinned_ht %>%
+                                 merge_cells(row=series, col=i)  %>% 
+                                 set_left_border(row=series, col=i, value = 0.4)  %>% 
+                                 set_top_border(row=start, col=i, value = 0.4) 
+      
+  }
+}
+
+for(i in 2:nrow(df_clustered_thinned_ht)){ #start on row 2 because 1 is the columns
+  #print(i)
+  end <- ncol(df_clustered_thinned_ht)
+  start <- which(is.na(df_clustered_thinned_ht[i,]))
+  if(length(start)>0){
+    start <- min(start)-1
+    #print(i)
+    series <- c(start,end)
+    #print(series)
+    df_clustered_thinned_ht <- df_clustered_thinned_ht %>%
+                                merge_cells(row=i, series) %>% 
+                                set_right_border(row=i, col=start, value = 0.4) 
+  }
+}
+
+df_clustered_thinned_ht <- df_clustered_thinned_ht %>% set_valign(value='middle' )  #%>% merge_repeated_rows() 
+
+#valign(df_clustered_thinned_ht)
+
+df_clustered_thinned_ht <- df_clustered_thinned_ht %>% 
+      set_background_color(evens, everywhere, "grey95") #%>% 
+      #set_background_color(odds, everywhere, NULL) 
+
+df_clustered_thinned_ht[1,] <- rep("",  df_clustered_thinned_ht %>% ncol())
+#df_clustered_thinned_ht 
+ 
+#df_clustered_thinned_ht %>% quick_html()
+#%>% map_text_color(by_regex("berry" = "red4", "navy"))
+
+
+```
+
+
+```{r}
+
+library(tinytex)
+tlmgr_install()
+
+df_clustered_thinned_ht %>% 
+  set_font_size(value=7)  %>% 
+  set_all_padding(value="0px")  %>%
+  set_tb_padding(value="0px")  %>% 
+  #quick_pdf( file = "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/df_clustered_thinned_ht.pdf")
+  quick_html( file = "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/df_clustered_thinned_ht.html")
+
+```

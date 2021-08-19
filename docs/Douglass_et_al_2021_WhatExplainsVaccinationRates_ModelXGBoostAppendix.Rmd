@@ -1,0 +1,1063 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+Ok so here's the plan
+We cluster variable symantically into 99 groups
+We fit the null model with just means
+We fit the full model
+And then we perform ablation, holding back the semantic cluster doing the most work at each iteration, cumulatively. This is how we solve masking.
+
+So we have a table that is
+Line 1 Full model
+Line 3 Full model - politics
+Line 4 full model - politics and whatever pops to the top next
+Next to last line is the first model that no longer beats the baseline
+Then the baseline
+
+In the columns we have
+-The name of the cluster
+-The model performance. Full model with access to that group. That group just on its own.
+-Map of change in residuals, what parts of the country do worse
+-Top X counties that improve and by how much
+-Top Y counties that worsen and by how much
+
+-The top X variables from that cluster
+-Their constributions and maybe a little pictogram that is the shape of that relationship
+
+
+
+
+```{r}
+
+library(pacman)
+p_load(tidyverse)
+Sys.setenv(LD_LIBRARY_PATH="/usr/lib/cuda:/usr/lib/cuda/lib64:/usr/lib/cuda/include:" %>% paste0(Sys.getenv("LD_LIBRARY_PATH") ) )
+Sys.getenv("LD_LIBRARY_PATH")
+
+#rm(list = ls())
+#.rs.restartR()
+gc()
+fromscratch=F
+library(reticulate)
+#conda_list()
+#use_condaenv("py3.6", required = TRUE)
+
+library(tensorflow)
+library(keras)
+
+#install_tensorflow(
+#  method = c("auto"),
+#  conda = "auto",
+#  version = "default",
+#  envname = "py3.6",
+#  extra_packages = NULL,
+#  restart_session = TRUE,
+#  conda_python_version = "3.7",
+#)
+
+knitr::opts_chunk$set(fig.width = 8, fig.height = 8, message=F, warning=F, echo=F, results=F)
+
+#Library Loads
+p_load(tictoc)
+p_load(janitor)
+p_load(tidylog)
+p_load(stringr)
+p_load(ggdag)
+p_load(data.table)
+p_load(sf)
+p_load(glue)
+p_load(scales)
+options(tigris_use_cache = TRUE)
+
+```
+
+
+```{r}
+
+
+rhs_codebook_total_clustered <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_codebook_total_clustered.Rds")
+
+
+yid_all <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/yid_train.Rds")
+x_all <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train.Rds")
+Folds1 <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/Folds1.Rds")
+xy_all <- cbind(yid_all[,'y'],x_all) %>% as.data.frame()
+dim(xy_all)
+x_all_scaled <- x_all %>% scale() 
+
+summary(yid_all$y_share14plus)
+#x_train[,'y_share14plus']
+#x_train[,'y']
+
+x_all_variables <- data.frame(variables=colnames(x_all))
+
+
+
+variable_clean_255 <- rhs_codebook_total_clustered$variable_clean_255
+names(variable_clean_255) <-rhs_codebook_total_clustered$variable_clean
+x_all_255 <- x_all
+colnames(x_all_255) <- variable_clean_255[colnames(x_all)]
+
+#https://github.com/microsoft/LightGBM/issues/283
+get_lgbm_cv_preds <- function(cv){
+        rows <- length(cv$boosters[[1]]$booster$.__enclos_env__$private$valid_sets[[1]]$.__enclos_env__$private$used_indices)+length(cv$boosters[[1]]$booster$.__enclos_env__$private$train_set$.__enclos_env__$private$used_indices)
+        preds <- numeric(rows)
+        for(i in 1:length(cv$boosters)){
+                preds[
+                cv$boosters[[i]]$booster$.__enclos_env__$private$valid_sets[[1]]$.__enclos_env__$private$used_indices] <-
+                cv$boosters[[i]]$booster$.__enclos_env__$private$inner_predict(2)
+        }
+        return(preds)
+}
+
+
+      
+ablations=1:20
+eligible_variables <- rhs_codebook_total_clustered$variable_clean_255
+for(ablation in ablations){
+  
+    try({
+      treeshap_all <- arrow::open_dataset(glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results/shap/")) %>% collect()
+      dim(treeshap_all)
+      
+      used_clusters <- treeshap_all %>% 
+        mutate(ablation=1) %>% 
+        dplyr::select(ablation, test_fold, k_smallest, shap) %>% #throws an error here if it's the first run
+        dplyr::group_by(ablation,  k_smallest) %>% 
+        summarise(shap_cluster_total=sum(shap %>% abs())) %>%
+        filter(shap_cluster_total==max(shap_cluster_total)) %>% 
+        pull(k_smallest)
+      print(used_clusters)
+      eligible_variables <- rhs_codebook_total_clustered %>% filter(!k_smallest %in% used_clusters) %>% pull(variable_clean_255)
+      print(length(eligible_variables))
+    })
+
+    folds=1:6
+    for(fold in folds){
+      
+      yid_train <- yid_all[yid_all$fold!=fold,]
+      x_train <- x_all_255[yid_all$fold!=fold,eligible_variables]
+      yid_test <- yid_all[yid_all$fold==fold,]
+      x_test <- x_all_255[yid_all$fold==fold,eligible_variables]
+      
+      cv_folds_list=lapply(yid_train$fold%>% unique(), FUN=function(x) which(yid_train$fold==x))
+      
+      
+      #yup that's the reason
+      library(lightgbm)
+      dtrain=lgb.Dataset( x_train  %>% Rfast::data.frame.to_matrix(col.names=F) , #it's throwing an error about string size, i'm going to withhold feature names just incase that's the reason
+                          label=yid_train[,'y_share14plus']  %>% Rfast::data.frame.to_matrix(col.names=F), feature_pre_filter=T, max_bin=64)
+      
+    
+      
+      
+      tic()
+        lightgbm_cv_unpruned <- lgb.cv(
+                      params = list(
+                        objective = "regression", 
+                        metric = "l2",
+                        learning_rate=0.1, #default 0.1
+                        max_bin=63
+                        ),
+                      folds = cv_folds_list,
+                      data =dtrain ,
+                      early_stopping_rounds=10,
+                      num_threads=64,
+                      force_col_wise=T,
+                      nrounds=1000,
+                      return_cvbooster=T
+        )
+      toc() #405.538 sec elapsed elapsed, 6 minutes when I shorten the early stopping to 10 rounds #648.616 sec elapsed, vs 11 with lightgbm
+    
+    
+      y_all <- yid_train[,'y_share14plus']$y_share14plus
+      y_hat_lightgbm <- get_lgbm_cv_preds(lightgbm_cv_unpruned)
+      summary(abs(y_all- y_hat_lightgbm ))
+      #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+      #0.0000086 0.0288985 0.0585476 0.0724966 0.0996328 0.4053946  #7.2% off CV 
+      plot(y_all, y_hat_lightgbm)
+      abline(coef = c(0,1)) #  
+    
+    
+      lightgbm_unpruned <- lgb.train(
+        params = list(
+          objective = "regression", 
+          metric = "l2",
+          learning_rate=0.1, #default 0.1, 0.05 was worse 0.2 was worse too
+          max_bin=63
+          )
+        ,data = dtrain
+        , nrounds = round(lightgbm_cv_unpruned$best_iter*1) #this performs better when it's full as the cv
+        ,force_col_wise=T
+      )
+    
+      y_test <- yid_test[,'y_share14plus']$y_share14plus
+      y_hat_lightgbm_unpruned <- predict(lightgbm_unpruned, x_test )
+      summary(abs(y_test- y_hat_lightgbm_unpruned ))
+      #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+      #0.0000276 0.0177338 0.0454322 0.0560570 0.0790354 0.4415007  5.6% off on average
+    
+    
+      importance1=lgb.importance(lightgbm_cv_unpruned$boosters[[1]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
+      importance2=lgb.importance(lightgbm_cv_unpruned$boosters[[2]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
+      importance3=lgb.importance(lightgbm_cv_unpruned$boosters[[3]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
+      importance4=lgb.importance(lightgbm_cv_unpruned$boosters[[4]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
+      importance5=lgb.importance(lightgbm_cv_unpruned$boosters[[5]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
+    
+      importances <- bind_rows(importance1,importance2,importance3,importance4,importance5) %>% clean_names() %>%  group_by(variable) %>% summarise(gain=mean(gain), cover=mean(cover), frequency=mean(frequency), folds_used=n()) %>% arrange(desc(gain))
+      importances_all5 <- importances %>% filter(folds_used>=3) %>% arrange(folds_used %>% desc(), gain %>% desc())
+      
+      vars_pruned <- importances_all5$variable
+      length(vars_pruned)
+      dtrain_pruned=lgb.Dataset( x_train[,vars_pruned]  %>% Rfast::data.frame.to_matrix(col.names=F) , #it's throwing an error about string size, i'm going to withhold feature names just incase that's the reason
+                          label=yid_train[,'y_share14plus']  %>% Rfast::data.frame.to_matrix(col.names=F), feature_pre_filter=T, max_bin=64)
+        lightgbm_cv_pruned <- lgb.cv(
+                      params = list(
+                        objective = "regression", 
+                        metric = "l2",
+                        learning_rate=0.1, #default 0.1
+                        max_bin=63
+                        ),
+                      folds = cv_folds_list,
+                      data =dtrain_pruned ,
+                      early_stopping_rounds=10,
+                      num_threads=64,
+                      force_col_wise=T,
+                      nrounds=1000,
+                      return_cvbooster=T,
+                      verbose=0
+        )
+    
+      x_train_pruned=x_train[,vars_pruned]
+      y_hat_lightgbm_pruned <- get_lgbm_cv_preds(lightgbm_cv_pruned)
+      summary(abs(y_all- y_hat_lightgbm_pruned ))  
+      #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+      #0.0000091 0.0263566 0.0539701 0.0668619 0.0919933 0.4269607 #on the pruned set the validation performance improved to 6.6%
+      plot(y_all, y_hat_lightgbm_pruned)
+      abline(coef = c(0,1)) #  
+      
+      #x_train_pruned_fold1=  x_train[yid_train$fold!=1,vars_pruned]
+      #y_all_fold1 = yid_train[yid_train$fold!=1,'y_share14plus']
+      #lgb.save(lightgbm_cv_pruned$boosters[[1]]$booster, filename = '/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/models/lightgbm_pruned1.model', num_iteration = NULL)
+    
+      lightgbm_pruned <- lgb.train(
+        params = list(
+          objective = "regression", 
+          metric = "l2",
+          learning_rate=0.1, #default 0.1
+          max_bin=63
+          )
+        ,data = dtrain_pruned
+        , nrounds = round(lightgbm_cv_pruned$best_iter*0.8) #iterating for 80% of the cv runs performance best, so we're now outperforming the full dataset with a fraction of the features
+      )
+      
+      y_hat_test <- predict(lightgbm_pruned, x_test[,vars_pruned] )*100
+      y_test <- yid_test[,'y_share14plus']$y_share14plus*100
+      summary(abs(y_test- y_hat_test ))    
+      #   Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+      #0.05011  2.00674  4.12891  5.55416  7.33402 41.07800 #5.55% off when we back off the rounds 80%
+      
+      
+      #Can we do even better? We're still using 275 features
+      
+      #This is in sample shap
+      condition_test=yid_train[,'fold']!=unique(yid_train[,'fold'])$fold[1]
+      y_test_df <- yid_train[condition_test,'y_share14plus'] %>% mutate(ID=row_number()) %>% mutate(y_hat=predict(lightgbm_cv_pruned$boosters[[1]]$booster, x_train_pruned[condition_test,])) %>% mutate(residual=y_hat-y_share14plus)
+      shap_values1 <- SHAPforxgboost::shap.values(xgb_model = lightgbm_cv_pruned$boosters[[1]]$booster, X_train =  x_train_pruned[condition_test,] )
+      shap_long1 <- SHAPforxgboost::shap.prep(xgb_model = lightgbm_cv_pruned$boosters[[1]]$booster, X_train = x_train_pruned[condition_test,]      ) %>% left_join(y_test_df) %>% 
+        mutate(new_y_hat =y_hat-value) %>% mutate(new_residual=new_y_hat-y_share14plus)
+      shap_loss1 <- shap_long1 %>% group_by(variable) %>% summarize(old_rmse=Metrics::mse(y_share14plus,y_hat), new_rmse=Metrics::mse(y_share14plus,new_y_hat)) %>% mutate(rmse_change_from_removing=new_rmse-old_rmse) %>% mutate_if(is.numeric, round, 7)
+      shap_importances1 <- SHAPforxgboost::shap.importance(shap_long1, names_only = FALSE, top_n = Inf) %>% left_join(shap_loss1) #it's identical
+    
+      condition_test=yid_train[,'fold']!=unique(yid_train[,'fold'])$fold[2]
+      y_test_df <- yid_train[condition_test,'y_share14plus'] %>% mutate(ID=row_number()) %>% mutate(y_hat=predict(lightgbm_cv_pruned$boosters[[2]]$booster, x_train_pruned[condition_test,])) %>% mutate(residual=y_hat-y_share14plus)
+      shap_values2 <- SHAPforxgboost::shap.values(xgb_model = lightgbm_cv_pruned$boosters[[2]]$booster, X_train =  x_train_pruned[condition_test,] )
+      shap_long2 <- SHAPforxgboost::shap.prep(xgb_model = lightgbm_cv_pruned$boosters[[2]]$booster, X_train = x_train_pruned[condition_test,]      ) %>% left_join(y_test_df) %>% 
+        mutate(new_y_hat =y_hat-value) %>% mutate(new_residual=new_y_hat-y_share14plus)
+      shap_loss2 <- shap_long2 %>% group_by(variable) %>% summarize(old_rmse=Metrics::mse(y_share14plus,y_hat), new_rmse=Metrics::mse(y_share14plus,new_y_hat)) %>% mutate(rmse_change_from_removing=new_rmse-old_rmse) %>% mutate_if(is.numeric, round, 7)
+      shap_importances2 <- SHAPforxgboost::shap.importance(shap_long2, names_only = FALSE, top_n = Inf) %>% left_join(shap_loss2) #it's identical
+      
+      condition_test=yid_train[,'fold']!=unique(yid_train[,'fold'])$fold[3]
+      y_test_df <- yid_train[condition_test,'y_share14plus'] %>% mutate(ID=row_number()) %>% mutate(y_hat=predict(lightgbm_cv_pruned$boosters[[3]]$booster, x_train_pruned[condition_test,])) %>% mutate(residual=y_hat-y_share14plus)
+      shap_values3 <- SHAPforxgboost::shap.values(xgb_model = lightgbm_cv_pruned$boosters[[3]]$booster, X_train =  x_train_pruned[condition_test,] )
+      shap_long3 <- SHAPforxgboost::shap.prep(xgb_model = lightgbm_cv_pruned$boosters[[3]]$booster, X_train = x_train_pruned[condition_test,]      ) %>% left_join(y_test_df) %>% 
+        mutate(new_y_hat =y_hat-value) %>% mutate(new_residual=new_y_hat-y_share14plus)
+      shap_loss3 <- shap_long3 %>% group_by(variable) %>% summarize(old_rmse=Metrics::mse(y_share14plus,y_hat), new_rmse=Metrics::mse(y_share14plus,new_y_hat)) %>% mutate(rmse_change_from_removing=new_rmse-old_rmse) %>% mutate_if(is.numeric, round, 7)
+      shap_importances3 <- SHAPforxgboost::shap.importance(shap_long3, names_only = FALSE, top_n = Inf) %>% left_join(shap_loss3) #it's identical
+      
+    
+      condition_test=yid_train[,'fold']!=unique(yid_train[,'fold'])$fold[4]
+      y_test_df <- yid_train[condition_test,'y_share14plus'] %>% mutate(ID=row_number()) %>% mutate(y_hat=predict(lightgbm_cv_pruned$boosters[[4]]$booster, x_train_pruned[condition_test,])) %>% mutate(residual=y_hat-y_share14plus)
+      shap_values4 <- SHAPforxgboost::shap.values(xgb_model = lightgbm_cv_pruned$boosters[[4]]$booster, X_train =  x_train_pruned[condition_test,] )
+      shap_long4 <- SHAPforxgboost::shap.prep(xgb_model = lightgbm_cv_pruned$boosters[[4]]$booster, X_train = x_train_pruned[condition_test,]      ) %>% left_join(y_test_df) %>% 
+        mutate(new_y_hat =y_hat-value) %>% mutate(new_residual=new_y_hat-y_share14plus)
+      shap_loss4 <- shap_long4 %>% group_by(variable) %>% summarize(old_rmse=Metrics::mse(y_share14plus,y_hat), new_rmse=Metrics::mse(y_share14plus,new_y_hat)) %>% mutate(rmse_change_from_removing=new_rmse-old_rmse) %>% mutate_if(is.numeric, round, 7)
+      shap_importances4 <- SHAPforxgboost::shap.importance(shap_long4, names_only = FALSE, top_n = Inf) %>% left_join(shap_loss4) #it's identical  
+        
+      
+      condition_test=yid_train[,'fold']!=unique(yid_train[,'fold'])$fold[5]
+      y_test_df <- yid_train[condition_test,'y_share14plus'] %>% mutate(ID=row_number()) %>% mutate(y_hat=predict(lightgbm_cv_pruned$boosters[[5]]$booster, x_train_pruned[condition_test,])) %>% mutate(residual=y_hat-y_share14plus)
+      shap_values5 <- SHAPforxgboost::shap.values(xgb_model = lightgbm_cv_pruned$boosters[[5]]$booster, X_train =  x_train_pruned[condition_test,] )
+      shap_long5 <- SHAPforxgboost::shap.prep(xgb_model = lightgbm_cv_pruned$boosters[[5]]$booster, X_train = x_train_pruned[condition_test,]      ) %>% left_join(y_test_df) %>% 
+        mutate(new_y_hat =y_hat-value) %>% mutate(new_residual=new_y_hat-y_share14plus)
+      shap_loss5 <- shap_long5 %>% group_by(variable) %>% summarize(old_rmse=Metrics::mse(y_share14plus,y_hat), new_rmse=Metrics::mse(y_share14plus,new_y_hat)) %>% mutate(rmse_change_from_removing=new_rmse-old_rmse) %>% mutate_if(is.numeric, round, 7)
+      shap_importances5 <- SHAPforxgboost::shap.importance(shap_long5, names_only = FALSE, top_n = Inf) %>% left_join(shap_loss5) #it's identical  
+      
+    
+      # SHAP value: value
+      # raw feature value: rfvalue;
+      # standarized: stdfvalue
+      shap_longs <- bind_rows(shap_long1,shap_long2,shap_long3,shap_long4,shap_long5) %>% group_by(variable) %>% 
+        summarise(shap_max=max(value),shap_min=min(value), shap_range=max(value)-min(value)) %>% mutate(shap_range_greater1=shap_range>=0.01)
+        
+      shap_importances <- bind_rows(shap_importances1,shap_importances2,shap_importances3,shap_importances4,shap_importances5) %>% group_by(variable) %>% summarise(mean_abs_shap=mean(mean_abs_shap), rmse_change_from_removing=mean(rmse_change_from_removing))
+      
+      importances_all5_and_shap <- importances_all5 %>% 
+                              #left_join(py$sage_df) %>% 
+                              left_join(shap_importances) %>% 
+                              arrange(desc(rmse_change_from_removing))
+    
+      plot(importances_all5_and_shap$gain, importances_all5_and_shap$rmse_change_from_removing)
+      
+      x_train_pruned_shap <- x_train[,importances_all5_and_shap$variable, drop=F]
+      dim(x_train_pruned_shap)
+      library(infotheo)
+      mi_x_train_pruned_shap <-   mutinformation(discretize(x_train_pruned_shap), method="emp")
+      d_x_train_pruned_shap <- dist(-1*mi_x_train_pruned_shap)
+      hc_x_train_pruned_shap <- hclust(d_x_train_pruned_shap, method="ward.D2")
+      library(ggdendro)
+      hc_x_train_pruned_shap %>% ggdendrogram(rotate = TRUE, theme_dendro = FALSE)
+      importances_all5_and_shap$cluster10 <- cutree(hc_x_train_pruned_shap, k=5)[as.character(importances_all5_and_shap$variable)]
+      
+      #What want to do is greadily pick the top performing variable in each cluster, make that 1 through 10. Do it again
+      #importances_all5_and_shap <- importances_all5_and_shap %>% group_by(cluster10) %>% mutate(cluster_rank=rank(rmse_change_from_removing)) %>% ungroup()
+    
+      #importances_all5_and_shap <- importances_all5_and_shap %>% arrange(desc(rmse_change_from_removing))
+      #importances_all5_and_shap$orthogonal_rank <- NA
+      #importances_all5_and_shap$condition <- F
+      #used_cuts <- c()
+      #for(i in 1:nrow(importances_all5_and_shap)){
+      # print(i)
+      # importances_all5_and_shap$condition <- is.na(importances_all5_and_shap$orthogonal_rank) & !importances_all5_and_shap$cluster10 %in% used_cuts
+      # if(sum(importances_all5_and_shap$condition)==0){
+      #   used_cuts <- c()
+      #   importances_all5_and_shap$condition <- is.na(importances_all5_and_shap$orthogonal_rank) & !importances_all5_and_shap$cluster10 %in% used_cuts
+      # }
+      # greedy_pick=min(which(importances_all5_and_shap$condition==T))
+      # print(greedy_pick)
+      # importances_all5_and_shap$orthogonal_rank[greedy_pick] <- i
+      # used_cuts <- c(used_cuts, importances_all5_and_shap$cluster10[greedy_pick])
+      # if(length(used_cuts)>=5){used_cuts <- c()}
+      #}
+      
+      ###################### Iterate feature by feature by cv rmse shap value and find the minimum number that's within 2% of the minimum in cv. Odds are that's close to the test minimum.
+      #Average gain does better than sage or folds
+      result_list <- list()
+      for(i in 1:nrow(importances_all5_and_shap)){
+        
+            vars_pruned_folds <- importances_all5_and_shap %>%
+                                filter(folds_used>=3) %>% #restricting to 4 doesn't help
+                                arrange(desc(rmse_change_from_removing)) %>%  #desc(folds_used)
+                                #arrange(orthogonal_rank) %>%  #desc(folds_used)
+              #filter(sage>0) %>%
+              filter(row_number()<=i) %>%
+              pull(variable)
+            length(vars_pruned_folds)
+    
+            
+            dtrain_pruned_folds=lgb.Dataset( x_train[,vars_pruned_folds, drop=F]  %>% Rfast::data.frame.to_matrix(col.names=F)  , #it's throwing an error about string size, i'm going to withhold feature names just incase that's the reason
+                              label=yid_train[,'y_share14plus'] %>% Rfast::data.frame.to_matrix(col.names=F) ,
+                              feature_pre_filter=T, max_bin=64)
+          
+            lightgbm_cv_pruned_shap <- lgb.cv(
+                          params = list(
+                            objective = "regression", 
+                            metric = "l2",
+                            learning_rate=0.1, #default 0.1
+                            max_bin=63
+                            ),
+                          folds = cv_folds_list,
+                          data =dtrain_pruned_folds ,
+                          early_stopping_rounds=10,
+                          num_threads=64,
+                          force_col_wise=T,
+                          nrounds=1000,
+                          #return_cvbooster=T,
+                          verbose=0
+            )
+          y_all <- yid_train[,'y_share14plus']$y_share14plus
+          y_hat_lightgbm_cv_pruned_shap <- get_lgbm_cv_preds(lightgbm_cv_pruned_shap)
+    
+          lightgbm_pruned_shap <- lgb.train(
+            params = list(
+              objective = "regression", 
+              metric = "l2",
+              learning_rate=0.1, #default 0.1
+              max_bin=63
+              )
+            ,data = dtrain_pruned_folds
+            , nrounds = round(lightgbm_cv_pruned_shap$best_iter*0.8)
+            , verbose=0
+            ,force_col_wise=T
+            ,num_threads=64
+          )
+          y_hat_test_shap <- predict(lightgbm_pruned_shap, x_test[,vars_pruned_folds, drop=F] )
+          y_test <- yid_test[,'y_share14plus']$y_share14plus
+    
+          result_list[[as.character(i)]] <- data.frame(x=i,
+                                                       cv_best_iteration=lightgbm_cv_pruned_shap$best_iter,
+                                                       rmse_test=Metrics::rmse(y_test,y_hat_test_shap),
+                                                       rmse_cv=Metrics::rmse(y_all,y_hat_lightgbm_cv_pruned_shap),
+                                                       rmse_test_null=Metrics::rmse(mean(y_all),y_test),
+                                                       mae_test=Metrics::mae(y_test,y_hat_test_shap),
+                                                       mae_cv=Metrics::mae(y_all,y_hat_lightgbm_cv_pruned_shap),
+                                                       mae_test_null=Metrics::mae(mean(y_all),y_test)
+                                                       ) 
+          
+          result_list_df <- 
+                        bind_rows(result_list)  %>%
+                        mutate(rmse_cv_min=which(rmse_cv==min(rmse_cv))+1)  %>%
+                        mutate(rmse_test_min=which(rmse_test==min(rmse_test))+1) %>%
+                        mutate(rmse_cv_percmin=rmse_cv/min(rmse_cv)) %>%
+                        mutate(rmse_cv_percmin_within1perc= rmse_cv_percmin<1.02)  #within 2% of the minimum on validation is pretty close to within the minimum on test
+                      
+          p <- result_list_df  %>% 
+              ggplot(aes(x)) + 
+              geom_point(aes(y=rmse_test ), col="red") +
+              geom_point(aes(y=rmse_cv), col="blue") + 
+              #geom_point(aes(y=mae_test ), col="red") +
+              #geom_point(aes(y=mae_cv), col="blue") + 
+              #geom_errorbar(aes(ymin=l_bound , ymax=u_bound ), colour="black", width=.1) +
+              geom_vline(aes(xintercept = rmse_cv_min), linetype="dotted", color = "blue", size=1) +
+              geom_vline(aes(xintercept = rmse_test_min), linetype="dotted", color = "red", size=1) +
+              geom_vline(aes(xintercept = which(rmse_cv_percmin_within1perc==T) %>% min()), linetype="dotted", color = "purple", size=1) +
+              geom_hline(aes(yintercept = rmse_test_null ), linetype="dotted", color = "black", size=1) 
+            
+            
+          plot(p)
+          
+      }
+      
+          result_list_df <- 
+                        bind_rows(result_list)  %>%
+                        mutate(rmse_cv_min=which(rmse_cv==min(rmse_cv))+1)  %>%
+                        mutate(rmse_test_min=which(rmse_test==min(rmse_test))+1) %>%
+                        mutate(rmse_cv_percmin=rmse_cv/min(rmse_cv)) %>%
+                        mutate(rmse_cv_percmin_within1perc= rmse_cv_percmin<1.02) %>%
+            bind_cols(importances_all5_and_shap) #this step can only happen out of the loop
+          
+          p <- result_list_df  %>% 
+              ggplot(aes(x)) + 
+              geom_point(aes(y=rmse_test ), col="red") +
+              geom_point(aes(y=rmse_cv), col="blue") + 
+              #geom_point(aes(y=mae_test ), col="red") +
+              #geom_point(aes(y=mae_cv), col="blue") + 
+              #geom_errorbar(aes(ymin=l_bound , ymax=u_bound ), colour="black", width=.1) +
+              geom_vline(aes(xintercept = rmse_cv_min), linetype="dotted", color = "blue", size=1) +
+              geom_vline(aes(xintercept = rmse_test_min), linetype="dotted", color = "red", size=1) +
+              geom_vline(aes(xintercept = which(rmse_cv_percmin_within1perc==T) %>% min()), linetype="dotted", color = "purple", size=1) +
+              geom_hline(aes(yintercept = rmse_test_null ), linetype="dotted", color = "black", size=1) 
+            
+            
+          plot(p)
+      
+       ###################### Of the 70 or so that's left refit the mdoel, see if we can't make it linear
+         vars_pruned_2percMSE <- result_list_df %>%
+                                 #arrange(desc(x)) %>%  #desc(folds_used) #don't arrange
+                                 filter(row_number() <= (which(rmse_cv_percmin_within1perc==T) %>% min() )) %>% #restricting to 4 doesn't help
+                                  pull(variable)
+        length(vars_pruned_2percMSE)
+        
+        x_train_pruned_2percMSE <- x_train[,vars_pruned_2percMSE]
+        
+        
+        dtrain_pruned_2percMSE =lgb.Dataset( x_train_pruned_2percMSE  %>% Rfast::data.frame.to_matrix(col.names=T) , #it's throwing an error about string size, i'm going to withhold feature names just incase that's the reason
+                        label=yid_train[,'y_share14plus']  %>% Rfast::data.frame.to_matrix(col.names=F), feature_pre_filter=T, max_bin=64)
+        
+        
+        lightgbm_cv_pruned_2percMSE<- lgb.cv(
+                      params = list(
+                        objective = "regression", 
+                        metric = "l2",
+                        learning_rate=0.1, #default 0.1
+                        max_bin=63
+                        ),
+                      folds = cv_folds_list,
+                      data =dtrain_pruned_2percMSE ,
+                      early_stopping_rounds=10,
+                      num_threads=64,
+                      force_col_wise=T,
+                      nrounds=1000,
+                      #return_cvbooster=T,
+                      verbose=0
+        )
+            
+        lightgbm_pruned_2percMSE <- lgb.train(
+          params = list(
+            objective = "regression", 
+            metric = "l2",
+            learning_rate=0.1, #default 0.1
+            max_bin=63
+            )
+          ,data = dtrain_pruned_2percMSE
+          , nrounds = lightgbm_cv_pruned_2percMSE$best_iter
+          , verbose=0
+          ,force_col_wise=T
+        )
+        y_hat_test_2percMSE <- predict(lightgbm_pruned_2percMSE, x_test[,vars_pruned_2percMSE, drop=F] )
+        y_test <- yid_test[,'y_share14plus']$y_share14plus
+        summary(abs(y_test-y_hat_test_2percMSE)) #0.0524484 bettter than everything
+        
+        yid_test %>% mutate(y_hat_test_2percMSE=y_hat_test_2percMSE, fold=fold, ablation=ablation) %>% 
+          arrow::write_parquet(glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results/performance/yid_test_fold{fold}_ablation{ablation}.parquet"))
+    
+        #devtools::install_github('ModelOriented/treeshap')
+        library(treeshap)
+        unified <- lightgbm.unify(lightgbm_pruned_2percMSE, x_train_pruned_2percMSE  )
+        head(unified$model)
+        treeshap1 <- treeshap(unified,  x_train_pruned_2percMSE %>% as.data.frame() , verbose =1)
+        
+        treeshap_long <- 
+          treeshap1$shaps  %>% 
+          mutate(obs=row_number()) %>% 
+          pivot_longer(-obs, values_to = "shap",names_to = "variable_clean_255") %>% 
+          left_join( treeshap1$observations  %>% mutate(obs=row_number()) %>% 
+                       pivot_longer(-obs, values_to = "covariate_value",names_to = "variable_clean_255") )  %>% 
+          left_join(rhs_codebook_total_clustered, by=c('variable_clean_255') ) %>% #join the codebook on it
+          group_by(variable) %>% 
+            mutate(shap_variable_total= shap %>% abs() %>% sum() ) %>%
+            mutate(covariate_value_scaled= covariate_value %>% scale() ) %>%
+          ungroup() %>%
+          group_by(k_smallest) %>% 
+            mutate(shap_cluster_total= shap %>% abs() %>% sum() ) %>%
+          ungroup() %>%
+          mutate(test_fold=fold)  %>%
+          mutate(ablation=ablation)
+          
+        treeshap_long %>% 
+          arrow::write_parquet(glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results/shap/treeshap_long_fold{fold}_ablation{ablation}.parquet"))
+    
+    }
+
+}
+
+treeshap_all <- arrow::open_dataset(glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results/shap/")) %>% collect()
+dim(treeshap_all)
+
+treeshap_all %>% 
+  mutate(ablation=1) %>% 
+  dplyr::select(ablation, test_fold, k_smallest, shap) %>%
+  dplyr::group_by(ablation,  k_smallest) %>% 
+  summarise(shap_cluster_total=sum(shap %>% abs())) %>%
+  filter(shap_cluster_total==max(shap_cluster_total))
+
+
+
+```
+
+Plotting
+
+```{r, eval =F}
+
+
+    #         Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+    #0.0000276 0.0192938 0.0413448 0.0524484 0.0724075 0.3454444
+    
+    #library(SHAPforxgboost)
+    #shap_values_pruned_2percMSE <- SHAPforxgboost::shap.values(xgb_model = lightgbm_pruned_2percMSE, X_train =  x_train[,vars_pruned_2percMSE] )
+    #shap_long_pruned_2percMSE <- SHAPforxgboost::shap.prep(xgb_model = lightgbm_pruned_2percMSE, X_train = x_train[,vars_pruned_2percMSE]     ) %>%
+    #  left_join(y_test_df) %>%  mutate(new_y_hat =y_hat-value) %>% mutate(new_residual=new_y_hat-y_share14plus)
+    #shap_importances_2percMSE <- SHAPforxgboost::shap.importance(shap_long_pruned_2percMSE, names_only = FALSE, top_n = Inf) 
+    
+    #shap_long_pruned_2percMSE_interactions <- predict( lightgbm_pruned_2percMSE, data = x_train[,vars_pruned_2percMSE] , predinteraction = TRUE ) #you have to use this formulation
+    
+    #SHAPforxgboost::shap.plot.summary(shap_long_pruned_2percMSE)
+
+    #Cluster variables
+    library(RColorBrewer)
+    #colors <- c(brewer.pal(30,"Set3"),
+    #            brewer.pal(30,"Paired"),
+    #            brewer.pal(30,"Dark2"))
+    colors <- grDevices::colors()[grep('gr(a|e)y', grDevices::colors(), invert = T)]    
+    p_load(randomcoloR)
+    n <- 100
+    palette <- distinctColorPalette(n)
+                
+    data %>% mutate(
+      color = c("#009E73", "#D55E00", "#0072B2", "#000000"),
+      name = glue("<i style='color:{color}'>{bactname}</i> ({OTUname})"),
+      name = fct_reorder(name, value)
+    ) 
+    
+    #install.packages("ggtext")
+    library(ggtext)
+    temp <-     treeshap1_long %>% 
+      mutate(cluster_color = palette[k_smallest]) %>%
+      mutate(variable_size = (1/log(nchar(variable)))*60  ) %>%
+      mutate(variable_wrap = variable %>% as.character() %>% str_replace_all("_"," ") %>% str_wrap(width =50) %>% str_replace_all("\n", "<br>") ) %>%
+
+      mutate(variable_markdown = glue("<i style='color:{cluster_color};font-size:{variable_size}px'>{variable_wrap}</i>") ) %>%
+      group_by(variable) %>% 
+        mutate(shap_total= shap %>% abs() %>% sum() ) %>%
+        mutate(x_scaled= covariate_value %>% scale() ) %>%
+      ungroup() %>%
+      group_by(k_smallest) %>% 
+        mutate(shap_cluster_total= shap %>% abs() %>% sum() ) %>%
+      ungroup() %>%
+      mutate( variable_markdown = fct_reorder2(variable_markdown, shap_cluster_total, shap_total, max, .desc=T) )  %>%
+      filter( as.numeric(variable_markdown)<=64) 
+    
+    cluster_shaps <- temp %>% dplyr::select( variable, k_smallest, shap_total, shap_cluster_total) %>% distinct() %>% arrange(desc(shap_cluster_total), desc(shap_total)) 
+    
+    temp %>% 
+      ggplot(aes(x=covariate_value, y=shap, col=x_scaled)) + 
+      geom_point() +
+      facet_wrap( ~  variable_markdown, scales = "free") +
+      geom_smooth(se = T, col="black", linetype="dashed", fullrange=F, method="gam") +
+      scale_color_gradient2("Covariate\nStandard\nDeviations",midpoint=0) +
+      ggtitle("") + 
+      ylab("Marginal Change In Predicted Percent Vaccinated (Shap Value)") + 
+      xlab("Covariate Raw Value") + 
+      scale_y_continuous(labels = scales::percent) +
+      theme(
+        strip.background=element_rect(fill=NA, color=NA),
+        strip.text=element_markdown() 
+        )
+    #size = 12, lineheight = 0.5
+      #+
+      #xlab("") + ylab("") + xlim(c(10,90))
+    
+    # 
+    # treeshap_interactions <- treeshap(unified,  x_train_pruned_2percMSE %>% as.data.frame() , interactions = TRUE, verbose = 1)
+    # plot_contribution(treeshap1, obs = 1, max_vars = 50) #, min_max = c(0, 16000000)
+    # plot_feature_importance(treeshap1, max_vars = 50)
+    # 
+    # plot_feature_dependence(treeshap1, colnames(x_train_pruned_2percMSE)[1])
+    # plot_interaction(treeshap_interactions, colnames(x_train_pruned_2percMSE)[1], "acs_poverty_status_in_the_past_12_months_of_individuals_by_sex_by_educational_attainment_total_income_in_the_past_12_months_at_or_above_poverty_level_female_bachelors_degree_or_higher_b17003_023_acs5_percapita")
+    # 
+    # dim(treeshap_interactions$interactions) #it's feature by feature by obs
+    # dim(treeshap_interactions$interactions[1,,])
+    # interactions_absolute <- apply(treeshap_interactions$interactions, MARGIN=c(1,2), FUN=function(x)sum(abs(x))) 
+    # #This is the absolute iteraction between any two variables, it's not much.
+    # interactions_absolute_long <- interactions_absolute %>% 
+    #                               as.data.frame() %>%
+    #                               add_rownames(var = "variable_i") %>%
+    #                               pivot_longer(-variable_i, names_to="variable_j") %>% 
+    #                               group_by(variable_i) %>%
+    #                                 mutate(variable_i_max=max(value)) %>%
+    #                               ungroup() %>%
+    #                               rowwise() %>%
+    #                                 mutate(variable_ij=paste0(sort(c(variable_i,variable_j)), collapse=";"  )) %>%
+    #                               ungroup() %>%
+    #                               filter(variable_i!=variable_j) %>% 
+    #                               arrange(desc(value)) %>%
+    #                               arrange(variable_i_max %>% desc()) %>%
+    #                               filter(!duplicated(variable_ij) & variable_i!=variable_j) %>%
+    #                               arrange(desc(value))
+    # 
+    # diag(interactions_absolute) <- NA
+    # lower.tri(x, diag = FALSE)
+    # which(rank(-1*interactions_absolute,ties.method ="first")==1, arr.ind = T) #basically we want to step through all the interactions if any
+    
+    
+    
+    #We basically want to summarize each relationship
+    #linear
+    #curvalinear
+    #parabolic
+    
+    #I think I can go further with rpart. Fit a piecewise regression. Allow up to x^3 in it. Then parse the tree it returns into english as, linear increases in, curvalinear, flat and then decreasing after a certain point. Change point, etc.
+    #Maybew we just want to color code those instead have little plots
+    #Main effect, main interactions 
+    
+    
+    
+    # i=1
+    # j=2
+    # df <- data.frame(shap=treeshap_interactions$interactions[i,j,], value_x=x_train_pruned_2percMSE[,i], value_y=x_train_pruned_2percMSE[,j])
+    # df %>% 
+    #   mutate(value_x=value_x %>% round(2), value_y=value_y %>% round(2)) %>% 
+    #   group_by(value_x,value_y) %>%
+    #   summarise(shap=mean(shap) ) %>%
+    # ggplot( aes(x=value_x, y=value_y, fill=shap)) + 
+    # geom_tile()  +
+    # scale_fill_gradient(low="red", high="blue") 
+    # 
+
+    # 
+    # p_load(DALEX)
+    # explainer <- explain(lightgbm_pruned_2percMSE, data = x_train[,vars_pruned_2percMSE]  , y = yid_train[,'y_share14plus'] , label = "lightgbm_pruned_2percMSE", verbose = T)    
+    # library("modelStudio")
+    # modelStudio(explainer)
+    # 
+    #     
+    # #install.packages("DALEX")
+    # #install.packages("DALEXtra")
+    # p_load(DALEX)
+    # p_load(rSAFE)
+    # library(randomForestSRC)
+    # x_train_pruned_2percMSE_imputed <- impute.rfsrc (data=x_train[,vars_pruned_2percMSE] %>% as.data.frame()) %>% as.matrix()
+    # explainer <- explain(lightgbm_pruned_2percMSE, data = x_train_pruned_2percMSE_imputed[,vars_pruned_2percMSE] , y = yid_train[,'y_share14plus'] , label = "lightgbm_pruned_2percMSE", verbose = T)
+    # #explainer
+    # safe_extractor<- safe_extraction(explainer, penalty = "MBIC", verbose = T, interactions=T) #
+    # print(safe_extractor)
+    # 
+    # lapply(shap_importances_2percMSE %>% arrange(mean_abs_shap %>% desc()) %>% pull(variable) %>% head(10) %>% as.character(), FUN=function(x) plot(safe_extractor, variable =x))
+    # 
+    # plot(safe_extractor, variable = "politics_donaldjtrump_2020_perc")
+    # plot(safe_extractor, variable = "politics_donaldtrump_2016_perc")
+    # plot(safe_extractor, variable = "acs_veteran_status_by_educational_attainment_for_the_civilian_population_25_years_and_over_total_nonveteran_bachelors_degree_or_higher_b21003_011_acs5_percapita")
+    # plot(safe_extractor, variable = "acs_total_fields_of_bachelors_degrees_reported_total_science_and_engineeringsocial_sciences_b15012_006_acs5_percapita")
+    # plot(safe_extractor, variable = "acs_health_insurance_coverage_status_by_age_white_alone_not_hispanic_or_latino_total_19_to_64_years_no_health_insurance_coverage_c27001h_007_acs1_perc")
+    # 
+    # plot(safe_extractor, variable = "politics_johnmccain_2008_perc")
+    # plot(safe_extractor, variable = "acs_mortgage_status_by_real_estate_taxes_paid_total_not_mortgaged_3_000_or_more_b25102_014_acs5_perc")
+    # plot(safe_extractor, variable = "cew_percent_change_employed_naics_72_accommodation_and_food_services_private")
+    # plot(safe_extractor, variable = "acs_health_insurance_coverage_status_by_age_white_alone_not_hispanic_or_latino_total_19_to_64_years_no_health_insurance_coverage_c27001h_007_acs5_percapita")
+    # plot(safe_extractor, variable = "countyhealthrankings_mammography_screening_percap2018")
+    # 
+    # 
+    # x_train_pruned_2percMSE_transformed <- safely_transform_data(safe_extractor,data=cbind(x_train_pruned_2percMSE_imputed,yid_train[,'y_share14plus']) %>% as.data.frame(),  verbose=T)
+    # variable_selected <- safely_select_variables(safe_extractor,data=cbind(x_train_pruned_2percMSE_imputed,yid_train[,'y_share14plus']) %>% as.data.frame(), which_y = "y_share14plus", verbose=T)
+    # variable_selected_withinteract <- variable_selected %>% c(colnames(x_train_pruned_2percMSE_imputed) %>% str_subset("^interaction_") )
+    # 
+    # x_train_pruned_2percMSE_transformed_final <- x_train_pruned_2percMSE_transformed[,variable_selected_withinteract] #didn't chose any interactions
+    # dim(x_train_pruned_2percMSE_transformed_final) #I think this doesn't understand interactions
+    # 
+    # 
+
+
+      #https://modelstudio.drwhy.ai/articles/ms-perks-features.html#parallel-computation
+    #options(
+    #  parallelMap.default.mode        = "socket",
+    #  parallelMap.default.cpus        = 64,
+    #  parallelMap.default.show.info   = FALSE
+    #)
+    #modelStudio(explainer,
+    #            #new_observation = test[1:16,],
+    #            parallel = TRUE)
+    
+    #library("modelStudio")
+    #modelStudio(explainer)
+    
+    #This is not fast
+
+    
+    
+
+          
+    #devtools::install_github("ModelOriented/shapper")
+    #library("shapper")
+    #install_shap()
+      
+
+```
+  
+
+
+
+
+```
+
+#
+
+pip install sage-importance
+
+Ok the things I learned here are
+1) It's not feasible with a large number of features. 1k looks like an hour+
+2) It does appear to sort a small number of features well <100
+3) It gives negative values and so we might be able to threshold on those immmediately
+4) And then we might could just refit 1 to X number and see when we start to overfit on the CV
+
+```{python}
+
+#It doens't update very quickly, but looks like 10 minutes total per fold. jumped to 50%, wait now jumped back to 0. Lol.
+import sage
+import numpy as np
+from sklearn.model_selection import train_test_split
+import xgboost as xgb
+import lightgbm as lgb
+
+#model = xgb.Booster({'nthread': 64})  # init model
+#model.load_model('/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/models/xgboost_pruned1.model')  # load data
+
+model = lgb.Booster(model_file='/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/models/lightgbm_pruned1.model')
+
+#it took 9 hours for 1k varabials
+# Setup and calculate
+imputer = sage.MarginalImputer(model, r.x_train_pruned_fold1[:512]) #
+estimator = sage.PermutationEstimator(imputer, 'mse')
+sage_values = estimator(r.x_train_pruned_fold1, r.y_all_fold1.to_numpy(), thresh=0.05) #slow as f even with only 100 vars threshold determines how long to wait for convergence
+
+import pandas as pd
+sage_df = pd.DataFrame(data={'variable': r.vars_pruned, 'sage': sage_values.values, 'std': sage_values.std })
+
+
+```
+
+```{r}
+
+library(xgboost)
+pars_best2 <- list( 
+    #booster = "dart",
+    eta = 0.1 #getBestPars(optObj)$eta #they picked a very low learning rate #lower learning rate for the final one
+    , max_depth = 6 #grid_result_best$max_depth
+    #, min_child_weight = 15 #grid_result_best$min_child_weight
+    , subsample = 1 #grid_result_best$subsample
+    , objective = "reg:logistic" #"reg:squarederror" #"reg:logistic" #
+    , eval_metric = "rmse"
+    #, subsample=0.66
+    #, colsample_bytree=0.05
+    #,gamma=0.5 #0.5 best so far
+  )
+
+sage_df <- py$sage_df %>% arrange(desc(sage)) %>% mutate(sage_lower=((sage-std*1.96) * 100)  ) %>% mutate(sage=(sage*100) ) %>% filter(sage_lower>0)
+results_list <- list()
+for(i in 2:nrow(sage_df)) {
+  
+  vars_keep <- py$sage_df %>% arrange(desc(sage)) %>% pull(variable)  %>% head(i) #Wait, wtf. It has nearly the same preformance with just 5 vars? #The original importance scores do pretty damn good
+  current_vars_keep_length=length(vars_keep)
+  print(current_vars_keep_length) #
+  x_train_pruned <- x_train[,vars_keep]
+  xgboost_pruned <- xgb.cv(params = pars_best2, data = xgb.DMatrix( x_train_pruned  %>% Rfast::data.frame.to_matrix(col.names=T) , #%>% scale()
+                                                                     label=yid_train[,'y_share14plus']  %>% Rfast::data.frame.to_matrix(col.names=T)) , nround = 3000, 
+                     folds = Folds1,
+                     #nfold=3,
+                     prediction = T, showsd = F, early_stopping_rounds = 50, maximize = F, verbose = 0,nthread=64,
+                     callbacks=list(cb.cv.predict(save_models = TRUE)) ,
+                     base_score=mean(yid_train[,'y_share14plus']$y_share14plus) #if you give it a mean it'll do ok, it loses that sense of scale when you scale the whole rhs
+                     ) 
+  y_all <- yid_train[,'y_share14plus']$y_share14plus
+  Metrics::rmse(y_all,xgboost_pruned$pred) #0.08352055
+  results_list[[as.character(i)]] <- xgboost_pruned$evaluation_log[xgboost_pruned$best_iteration]
+  print(summary(abs(y_all-xgboost_pruned$pred)))
+  #    Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+  #0.000066 0.023695 0.050004 0.063280 0.088406 0.462734
+
+  #https://github.com/alexandre-bayle/cvci/blob/master/cv_num_exper.py
+  # We now have all the quantities needed to compute the 2-sided confidence intervals for the different methods for all algos (for estimating coverage probability and width with all replications later on). 
+  #We also have what we need to define the tests for comparing pairs of algos (for estimating size and power with all replications later on).
+  #def aggr_ours(indiv_err_kfoldCV, cond_fold_err_kfoldCV, version="out"):
+  #Ok I figure it out. They do both a cv and a test hold out. we don't care about the test hold
+  #cond_fold_err_kfoldCV
+  indiv_err_kfoldCV=(y_all-xgboost_pruned$pred)^2
+  aggr_ours <- function(indiv_err_kfoldCV){
+    k=6
+    squared_indiv_err_kfoldCV = indiv_err_kfoldCV ^ 2
+    n=length(y_all)
+    k=6
+    r=n/k
+    
+    fold_err_kfoldCV=list()
+    for(j in 1:k){
+      fold_err_kfoldCV[[as.character(j)]] <- indiv_err_kfoldCV[ Folds1[[j]] ] %>% mean()
+    }
+    squared_fold_err_kfoldCV = unlist(fold_err_kfoldCV)^2
+    kfoldCV_err = fold_err_kfoldCV %>% unlist() %>% mean()
+    
+    sigma_est = sqrt( squared_fold_err_kfoldCV %>% mean() - kfoldCV_err^2 )
+    return( list( kfoldCV_err=kfoldCV_err, sigma_est=sigma_est) )
+  }
+  
+  df <- as.data.frame(aggr_ours(indiv_err_kfoldCV))
+  
+  CI_2sided <- function(center, scale, df=None, distrib="normal", alpha=0.05){
+      #q = stats.norm.ppf(1-alpha/2,0,1)
+      q=pnorm(1-alpha, mean = 0, sd = 1, lower.tail = TRUE, log.p = FALSE)
+      variation = q * scale
+      l_bound = center - variation
+      u_bound = center + variation
+      return(list(l_bound=l_bound,u_bound=u_bound))
+  }
+  ci <- CI_2sided(df$kfoldCV_err,df$sigma_est)
+  df$l_bound <- ci$l_bound
+  df$u_bound <- ci$u_bound
+  
+  results_list[[as.character(i)]]=df
+
+  results_df <- bind_rows(results_list) %>% mutate(i=row_number()) %>% mutate(global_min= kfoldCV_err == min(kfoldCV_err))
+  p <- results_df %>% ggplot(aes(x=i)) + geom_point(aes(y=kfoldCV_err, color=global_min)) + geom_errorbar(aes(ymin=l_bound, ymax=u_bound), colour="black", width=.1) 
+  print(p)
+
+}
+results_df <- bind_rows(results_list) %>% mutate(i=row_number()) %>% mutate(global_min= kfoldCV_err == min(kfoldCV_err))
+results_df$variable <- sage_df$variable[1:nrow(results_df)]
+results_df %>% ggplot(aes(x=i)) + geom_point(aes(y=kfoldCV_err, color=global_min)) + geom_errorbar(aes(ymin=l_bound, ymax=u_bound), colour="black", width=.1)
+
+#The smallest error within 1 std of the minimum
+vars_keep <- py$sage_df %>% arrange(desc(sage)) %>% pull(variable)  %>% head(4) #Wait, wtf. It has nearly the same preformance with just 5 vars? #The original importance scores do pretty damn good
+current_vars_keep_length=length(vars_keep)
+print(current_vars_keep_length) #
+x_train_pruned <- x_train[,vars_keep]
+xgboost_pruned <- xgb.cv(params = pars_best2, data = xgb.DMatrix( x_train_pruned  %>% Rfast::data.frame.to_matrix(col.names=T) , #%>% scale()
+                                                                   label=yid_train[,'y_share14plus']  %>% Rfast::data.frame.to_matrix(col.names=T)) , nround = 3000, 
+                   folds = Folds1,
+                   #nfold=3,
+                   prediction = T, showsd = F, early_stopping_rounds = 50, maximize = F, verbose = 0,nthread=64,
+                   callbacks=list(cb.cv.predict(save_models = TRUE)) ,
+                   base_score=mean(yid_train[,'y_share14plus']$y_share14plus) #if you give it a mean it'll do ok, it loses that sense of scale when you scale the whole rhs
+                   ) 
+y_all <- yid_train[,'y_share14plus']$y_share14plus
+Metrics::rmse(y_all,xgboost_pruned$pred) #0.08352055
+results_list[[as.character(i)]] <- xgboost_pruned$evaluation_log[xgboost_pruned$best_iteration]
+print(summary(abs(y_all-xgboost_pruned$pred)))
+  
+  
+```
+
+
+
+```{python, eval=F}
+
+dtrain = xgb.DMatrix(r.x_train_pruned_fold2to6, label=r.y_all_fold2to6)
+dval = xgb.DMatrix(r.x_train_pruned_fold1, label=r.y_all_fold1)
+
+param = {
+     'eta' : 0.3,
+    'max_depth' : 6,
+    'objective': 'reg:logistic',
+    'nthread': 64
+}
+  
+# Parameters
+evallist = [(dtrain, 'train'), (dval, 'val')]
+num_round = 50
+
+# Train
+model = xgb.train(param, dtrain, num_round, evallist, verbose_eval=True)
+
+
+```
+
+
+
+```{python}
+
+df = sage.datasets.bike()
+feature_names = df.columns.tolist()[:-3]
+
+# Split data, with total count serving as regression target
+train, test = train_test_split(
+    df.values, test_size=int(0.1 * len(df.values)), random_state=123)
+train, val = train_test_split(
+    train, test_size=int(0.1 * len(df.values)), random_state=123)
+    
+Y_train = train[:, -1].copy()
+Y_val = val[:, -1].copy()
+Y_test = test[:, -1].copy()
+
+train = train[:, :-3].copy()
+val = val[:, :-3].copy()
+test = test[:, :-3].copy()
+
+
+# Set up data
+dtrain = xgb.DMatrix(train, label=Y_train)
+dval = xgb.DMatrix(val, label=Y_val)
+
+# Parameters
+param = {
+    'max_depth' : 10,
+    'objective': 'reg:squarederror',
+    'nthread': 4
+}
+evallist = [(dtrain, 'train'), (dval, 'val')]
+num_round = 50
+
+# Train
+model = xgb.train(param, dtrain, num_round, evallist, verbose_eval=False)
+
+
+imputer = sage.MarginalImputer(model, test[:512])
+estimator = sage.PermutationEstimator(imputer, 'mse')
+sage_values = estimator(test, Y_test)
+
+```
+
+
+
+
+```{r, eval=F}
+
+  #with a low learning rate this is very slow for the full dataset, which you then have to do for each fold and for each subset
+  pars_best <- list( 
+      #booster = "dart",
+      eta = 0.3 #getBestPars(optObj)$eta #they picked a very low learning rate #lower learning rate for the final one
+      , max_depth = 6 #grid_result_best$max_depth
+      #, min_child_weight = 15 #grid_result_best$min_child_weight
+      , subsample = 1 #grid_result_best$subsample
+      , objective = "reg:logistic" #"reg:squarederror" #"reg:logistic" #
+      , eval_metric = "rmse"
+      ,max_bin = 63
+      #,tree_method="hist" #histogram implimentation like used in lightgbm , histogram method was actually much slower. letting pick with auto is smarter 17min
+      #,tree_method = 'gpu_hist' #gpu is slower somehow
+      #, subsample=0.66
+      #, colsample_bytree=0.05
+      #,gamma=0.5 #0.5 best so far
+    )
+
+  dtrain_xgboost <- xgb.DMatrix( x_train  %>% Rfast::data.frame.to_matrix(col.names=T) , label=yid_train[,'y_share14plus']  %>% Rfast::data.frame.to_matrix(col.names=T))
+  tic()
+    xgboost_unpruned <- xgb.cv(params = pars_best, data = dtrain_xgboost , nround = 3000, 
+                       folds = cv_folds_list,
+                       prediction = T, showsd = F, early_stopping_rounds = 50, maximize = F, verbose = 1,nthread=64,
+                       callbacks=list(cb.cv.predict(save_models = TRUE)) #,
+                       #base_score=mean(yid_train[,'y_share14plus']$y_share14plus) #if you give it a mean it'll do ok, it loses that sense of scale when you scale the whole rhs
+                       ) 
+  toc() #728.617 sec elapsed, so 12 minutes with xgboost
+  y_all <- yid_train[,'y_share14plus']$y_share14plus
+  y_hat_xgboost <- xgboost_unpruned$pred
+  #print(summary(abs(y_all-xgboost_unpruned$pred)/y_all)) #xgboost performs way worse?
+  summary(abs(y_all-y_hat_xgboost))
+  #     Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
+  #0.0000399 0.0291649 0.0630228 0.0770783 0.1057377 0.4753463 
+  plot(y_all, y_hat_xgboost)
+  abline(coef = c(0,1)) #
+  
+  
+
+```
+
+
+```{r, eval=F}
+
+indiv_err_kfoldCV=(y_all-y_hat_lightgbm_cv_pruned_sage)^2
+aggr_ours <- function(indiv_err_kfoldCV,cv_folds_list){
+  k=length(cv_folds_list)
+  squared_indiv_err_kfoldCV = indiv_err_kfoldCV ^ 2
+  n=length(indiv_err_kfoldCV)
+  r=n/k
+  
+  fold_err_kfoldCV=list()
+  for(j in 1:k){
+    fold_err_kfoldCV[[as.character(j)]] <- indiv_err_kfoldCV[ cv_folds_list[[j]] ] %>% mean()
+  }
+  squared_fold_err_kfoldCV = unlist(fold_err_kfoldCV)^2
+  kfoldCV_err = fold_err_kfoldCV %>% unlist() %>% mean()
+  
+  sigma_est = sqrt( squared_fold_err_kfoldCV %>% mean() - kfoldCV_err^2 )
+  return( list( kfoldCV_err=kfoldCV_err, sigma_est=sigma_est) )
+}
+
+df <- as.data.frame(aggr_ours(indiv_err_kfoldCV, cv_folds_list))
+
+CI_2sided <- function(center, scale, df=None, distrib="normal", alpha=0.05){
+    #q = stats.norm.ppf(1-alpha/2,0,1)
+    q=pnorm(1-alpha, mean = 0, sd = 1, lower.tail = TRUE, log.p = FALSE)
+    variation = q * scale
+    l_bound = center - variation
+    u_bound = center + variation
+    return(list(l_bound=l_bound,u_bound=u_bound))
+}
+ci <- CI_2sided(df$kfoldCV_err,df$sigma_est)
+df$l_bound <- ci$l_bound
+df$u_bound <- ci$u_bound
+ci_1sd <- CI_2sided(df$kfoldCV_err,df$sigma_est, alpha=0.34134)
+df$l_bound_1sd <- ci_1sd$l_bound
+df$u_bound_1sd <- ci_1sd$u_bound
+
+```
+

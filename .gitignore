@@ -2,3 +2,16 @@
 .Rhistory
 .RData
 .Ruserdata
+models/
+file4322d73e7b1c4.log
+file4322d1e9ee438.log
+file2d789d1196555d.log
+derby.log
+data_in
+data_out
+data_temp
+data
+test_predictions
+ruralurbancodes2013.xls
+model_old
+results
