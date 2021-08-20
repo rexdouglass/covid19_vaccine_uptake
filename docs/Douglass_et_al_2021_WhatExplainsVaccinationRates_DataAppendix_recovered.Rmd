@@ -2634,7 +2634,6 @@ dim(rhs_combined_wide_temp)
 
 #rhs_combined_wide_temp %>% filter(fips==1115) %>% View()
 
-
 rhs_combined_wide <- rhs_combined_wide_temp %>%
                       pivot_wider(names_from=variable_clean, values_from=value) 
                       #sdf_pivot(fips ~ variable_clean, #for whatever reason it is really bad at going long to wide

@@ -15,3 +15,7 @@ test_predictions
 ruralurbancodes2013.xls
 model_old
 results
+results_include
+logs
+results_exclude
+data/

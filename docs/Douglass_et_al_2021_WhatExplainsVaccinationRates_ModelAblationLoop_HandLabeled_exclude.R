@@ -56,8 +56,14 @@ rhs_codebook_total_coded <- read.csv(file="/mnt/8tb_a/rwd_github_private/TrumpSu
   mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed(",","")  ) %>%
   mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed("{","")  ) %>%
   mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed("}","")  ) %>%
-  mutate( variable_clean_255 = variable_clean_255 %>%  stringi::stri_replace_all_fixed("\"","") )  %>%
+  mutate( variable_clean_255 = variable_clean_255 %>%  stringi::stri_replace_all_fixed("\"","") ) # %>%
   
+dim(rhs_codebook_total_coded)
+#We're also going to drop any acs1s that show up in acs5
+acs5_to_remove <- rhs_codebook_total_coded %>% filter(dataset %in% "acs5") %>% pull(description_stemmed) %>% unique()
+
+rhs_codebook_total_coded <- rhs_codebook_total_coded %>% 
+  filter(!(dataset %in% "acs1" & description_stemmed %in% acs5_to_remove)) %>%
   dplyr::select(-variable_short, -variable_short_group, -dataset,-description_stemmed, -variable_clean_255_dupe) %>%
   ####
   filter(!warning_dv %in% 1) #We're excluding warning DV from this
@@ -69,6 +75,12 @@ variable_groups <- variable_groups[!variable_groups %in% "warning_dv"]
 
 yid_all <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/yid_train.Rds")
 x_all <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train.Rds")
+
+not_missingness <- colSums( !is.na(x_all) ) # / nrow(rhs_combined_wide)
+table(not_missingness<2000) #there are 6k that have fewer than 500 obs
+#colnames(x_all)[not_missingness<1000] #They're almost all peurto rico related
+x_all <- x_all[,not_missingness>2000]  
+
 Folds1 <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/Folds1.Rds")
 xy_all <- cbind(yid_all[,'y'],x_all) %>% as.data.frame()
 dim(xy_all)
@@ -81,10 +93,10 @@ summary(yid_all$y_share18plus)
 x_all_variables <- data.frame(variables=colnames(x_all))
 
 rhs_codebook_total_coded$variable_clean <- rhs_codebook_total_coded$variable %>% janitor::make_clean_names() #actually quite slow
-setdiff(colnames(x_all), rhs_codebook_total_coded$variable_clean) #make sure all the names are n there
+#setdiff(colnames(x_all), rhs_codebook_total_coded$variable_clean) #make sure all the names are n there
 
 rhs_codebook_total_coded <- rhs_codebook_total_coded %>% filter(variable_clean %in% colnames(x_all)) #there's two random x and x_2 from the google sheet
-setdiff( rhs_codebook_total_coded$variable_clean, colnames(x_all))
+#setdiff( rhs_codebook_total_coded$variable_clean, colnames(x_all))
 
 variable_clean_255 <- rhs_codebook_total_coded$variable_clean_255
 names(variable_clean_255) <-rhs_codebook_total_coded$variable_clean #wow this is that R bug where it'll silently do partial matching
@@ -112,7 +124,7 @@ registerDoParallel(cl)
   ########## Ablation Loop Include ---------------------------------------
   verbose=F
   eligible_variables <- rhs_codebook_total_coded$variable_clean_255
-  print(length(eligible_variables)) #33176
+  print(length(eligible_variables)) #15,815 removing the acs1 in acs5 gets us down to 15k
   for(group in variable_groups){
     
     print(group)
@@ -123,7 +135,7 @@ registerDoParallel(cl)
     
     folds=1:6 #We can iterate quickly by just doing one fold over many variables and then switch it to 6 when we're running the full overnight
     for(fold in folds){
-      shap_out_file=glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude/shap/treeshap_long_ablation{ablation}_fold{fold}.parquet")
+      shap_out_file=glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude/shap/treeshap_long_ablation_{ablation}_fold{fold}.parquet")
       if(file.exists(shap_out_file)){next}
       
       tic()
@@ -318,7 +330,7 @@ registerDoParallel(cl)
       
       num_features <- as.integer(length(variable_shape_order))
       feature_range <- 1:num_features
-      condition <- runif(n=length(feature_range)) > (feature_range/num_features)^(1/3)
+      condition <- runif(n=length(feature_range)) > (feature_range/num_features)^(1/10)
       feature_range_surviving <- feature_range[condition]
 
       clusterEvalQ(cl,expr= {
@@ -331,8 +343,11 @@ registerDoParallel(cl)
       results <- pblapply(feature_range_surviving, FUN = function(x){ scoringFunction(features_to_keep=x) } , cl=cl)
       optObj <- bind_rows(results)
       optObj$features_to_keep=feature_range_surviving
-      p <- optObj%>% ggplot(aes(x=features_to_keep, y=Score)) + geom_line() 
-      print(p)
+      #loess1_Score <- loess(Score ~ features_to_keep, data=optObj, span=0.1)
+      #loess1_nrounds <- loess(nrounds ~ features_to_keep, data=optObj, span=0.1)
+      #optObj$features_to_keep_hat <- loess1_Score$fitted
+      #p <- optObj%>% ggplot(aes(x=features_to_keep, y=Score)) + geom_line() #+ geom_line(aes(y=features_to_keep_hat) , col='red') 
+      #print(p)
       
       # bounds <- list( 
       #   #max_depth = c(-1L, 100L) #If you put L it understands integers
@@ -416,7 +431,7 @@ registerDoParallel(cl)
       #0.0000119 0.0205543 0.0451527 0.0548780 0.0757547 0.3324835 
       
       yid_test %>% mutate(y_hat_test_pruned_optimized=y_hat_test_pruned_optimized, fold=fold, ablation=ablation) %>% 
-        arrow::write_parquet(glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude/performance/yid_test_ablation{ablation}_fold{fold}.parquet"))
+        arrow::write_parquet(glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude/performance/yid_test_ablation_{ablation}_fold{fold}.parquet"))
 
       
       
@@ -428,25 +443,27 @@ registerDoParallel(cl)
       #head(unified$model)
       treeshap1 <- treeshap(unified,  x_test[,vars_final] %>% as.data.frame() , verbose =1)
       
-      treeshap_long <- 
-        treeshap1$shaps  %>% 
-        mutate(obs=row_number()) %>% 
-        pivot_longer(-obs, values_to = "shap",names_to = "variable_clean_255") %>% 
-        left_join( treeshap1$observations  %>% mutate(obs=row_number()) %>% 
-                     pivot_longer(-obs, values_to = "covariate_value",names_to = "variable_clean_255") )  %>% 
-        left_join(rhs_codebook_total_coded, by=c('variable_clean_255') ) %>% #join the codebook on it
-        group_by(variable) %>% 
-          mutate(shap_variable_total= shap %>% abs() %>% sum() ) %>%
-          mutate(covariate_value_scaled= covariate_value %>% scale() ) %>%
-        ungroup() %>%
-        mutate(test_fold=fold)  %>%
-        mutate(ablation=ablation)
-      
-      treeshap_long %>% 
-        mutate_if(is.logical, as.numeric) %>%
-        mutate_if(is.integer, as.numeric) %>%
-        arrow::write_parquet(shap_out_file, version="2.0") #2.0 did not fix it, now trying
-      
+      suppressMessages(
+        treeshap_long <- 
+          treeshap1$shaps  %>% 
+          mutate(obs=row_number()) %>% 
+          pivot_longer(-obs, values_to = "shap",names_to = "variable_clean_255") %>% 
+          left_join( treeshap1$observations  %>% mutate(obs=row_number()) %>% 
+                       pivot_longer(-obs, values_to = "covariate_value",names_to = "variable_clean_255") )  %>% 
+          left_join(rhs_codebook_total_coded, by=c('variable_clean_255') ) %>% #join the codebook on it
+          group_by(variable) %>% 
+            mutate(shap_variable_total= shap %>% abs() %>% sum() ) %>%
+            mutate(covariate_value_scaled= covariate_value %>% scale() ) %>%
+          ungroup() %>%
+          mutate(test_fold=fold)  %>%
+          mutate(ablation=ablation)
+      )
+      suppressMessages(
+        treeshap_long %>% 
+          mutate_if(is.logical, as.numeric) %>%
+          mutate_if(is.integer, as.numeric) %>%
+          arrow::write_parquet(shap_out_file, version="2.0") #2.0 did not fix it, now trying
+      )
       treeshap_long <- NULL;    gc()
       toc()
     }
