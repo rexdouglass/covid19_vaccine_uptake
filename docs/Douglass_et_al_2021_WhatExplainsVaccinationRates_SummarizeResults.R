@@ -58,7 +58,83 @@ restartspark()
 
 
 
-yid_test <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results/performance/" ,memory=F) 
+yid_test_include <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_include/performance/" ,memory=F) %>% collect() #include is broken
+yid_test_exclude <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude/performance/" ,memory=F) %>% collect()
+yid_test_cumulative <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude_cumulative/performance/" ,memory=F) %>% collect()
+
+performance_include <- yid_test_include %>% collect() %>% group_by(ablation) %>% summarize(rmse_include=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_include=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+performance_exclude <- yid_test_exclude %>% collect() %>% group_by(ablation) %>% summarize(rmse_exclude=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_exclude=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+performance_exclude_cumulative <- yid_test_cumulative %>% collect() %>% group_by(ablation) %>% summarize(rmse_exclude_cumulative=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_exclude_cumulative=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+
+results <- performance_include %>% mutate(ablation=ablation %>% str_replace("keep_","")) %>%
+  full_join(performance_exclude %>% 
+              mutate(ablation=ablation %>% str_replace("keep_","")) ) %>% 
+  full_join(performance_exclude_cumulative %>%
+              mutate(ablation=ablation %>% str_replace("exclude_","") ) ) %>% 
+              arrange(rmse_exclude %>% desc() ) %>% 
+              mutate(baseline=ifelse(ablation=="exclude_nothing", rmse_exclude, NA)) %>%
+              mutate(baseline=max(baseline, na.rm=T)) %>%
+              mutate(rmse_exclude_cumulative_percbasline= round( 1 - (rmse_exclude_cumulative/baseline) , 2) ) %>%
+              mutate(rmse_exclude_percbasline= round( 1 - rmse_exclude/baseline , 2 ) ) %>%
+              mutate(rmse_include_percbasline= round( 1 -  rmse_include/baseline, 2 ) )
+results %>% view()
+
+
+#install.packages("huxtable")
+library(huxtable)
+results_ht <- results %>% dplyr::select(ablation, rmse_include,rmse_include_percbasline, rmse_exclude,rmse_exclude_percbasline, rmse_exclude_cumulative, rmse_exclude_cumulative_percbasline ) %>% as_hux()
+
+for(i in 1:ncol(df_clustered_thinned_ht) ) { #start on row 2 because 1 is the columns
+  #print(i)
+  groups <- apply(df_clustered_thinned[1:nrow(df_clustered_thinned) ,1:i] %>% as.matrix() ,1, paste0, collapse="_")  #Have to use the original
+  groups_unique <- groups %>% unique()
+  for(g in groups_unique ){
+    start <- (which(groups==g) %>% min())+1
+    end <- (which(groups==g) %>% max())+1
+    series <- start:end
+    df_clustered_thinned_ht <- df_clustered_thinned_ht %>%
+      merge_cells(row=series, col=i)  %>% 
+      set_left_border(row=series, col=i, value = 0.4)  %>% 
+      set_top_border(row=start, col=i, value = 0.4) 
+    
+  }
+}
+
+for(i in 2:nrow(df_clustered_thinned_ht)){ #start on row 2 because 1 is the columns
+  #print(i)
+  end <- ncol(df_clustered_thinned_ht)
+  start <- which(is.na(df_clustered_thinned_ht[i,]))
+  if(length(start)>0){
+    start <- min(start)-1
+    #print(i)
+    series <- c(start,end)
+    #print(series)
+    df_clustered_thinned_ht <- df_clustered_thinned_ht %>%
+      merge_cells(row=i, series) %>% 
+      set_right_border(row=i, col=start, value = 0.4) 
+  }
+}
+
+df_clustered_thinned_ht <- df_clustered_thinned_ht %>% set_valign(value='middle' )  #%>% merge_repeated_rows() 
+
+#valign(df_clustered_thinned_ht)
+
+df_clustered_thinned_ht <- df_clustered_thinned_ht %>% 
+  set_background_color(evens, everywhere, "grey95") #%>% 
+#set_background_color(odds, everywhere, NULL) 
+
+df_clustered_thinned_ht[1,] <- rep("",  df_clustered_thinned_ht %>% ncol())
+#df_clustered_thinned_ht 
+
+
+
+
+
+
+
+
+
+
 
 performance_ablation <- yid_test %>% collect() %>% group_by(ablation) %>% summarize(rmse_y_hat_test=Metrics::rmse(y_hat_test_2percMSE, y_share14plus), rae_y_hat_test=Metrics::mae(y_hat_test_2percMSE, y_share14plus))  
 performance_ablation %>% View()

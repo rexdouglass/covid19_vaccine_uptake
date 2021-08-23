@@ -1,9 +1,80 @@
 
-
 #Reset env
 rm(list = ls())
 #.rs.restartR()
 gc()
+
+
+
+###### Library loads -----------------------
+
+library(tidyverse)
+
+restartspark <- function(){
+  #devtools::install_github("rstudio/sparklyr")
+  #devtools::install_github("rstudio/sparklyr")
+  #install.packages('sparklyr') #rolling back to the stable version
+  library(sparklyr)
+  #spark_available_versions()
+  #spark_installed_versions()
+  #spark_uninstall(version="3.0.1", hadoop_version="3.2")
+  #spark_uninstall(version="2.4.3", hadoop_version="2.7")
+  #oh interesting the default is spark 2.4.3 I wonder why that is
+  #Error: Java 11 is only supported for Spark 3.0.0+
+  #spark_install("3.0") #3.1.1 is currently the latest stable, but 3.0 is the latest available
+  
+  #library(geospark)
+  #library(arrow)
+  mem="160G"
+  try({spark_disconnect(sc)})
+  conf <- spark_config()
+  #conf$`sparklyr.cores.local` <- 128
+  #https://datasystemslab.github.io/GeoSpark/api/sql/GeoSparkSQL-Parameter/
+  conf$spark.serializer <- "org.apache.spark.serializer.KryoSerializer"
+  #conf$spark.kryo.registrator <- "org.datasyslab.geospark.serde.GeoSparkKryoRegistrator"
+  #conf$spark.kryoserializer.buffer.max <- "2047MB" #Caused by: java.lang.IllegalArgumentException: spark.kryoserializer.buffer.max must be less than 2048 mb, got: + 10240 mb.
+  #https://github.com/DataSystemsLab/GeoSpark/issues/217
+  #conf$geospark.global.index <- "true"
+  #conf$geospark.global.indextype <- "quadtree"
+  #conf$geospark.join.gridtype <- "kdbtree"
+  #conf$spark.sql.shuffle.partitions <- 1999 #https://github.com/DataSystemsLab/GeoSpark/issues/361 #setting to just under 2k so compression doesn't kick in, don't need to lower the memory footprint
+  conf$spark.driver.maxResultSize <- "100G"
+  conf$spark.memory.fraction <- 0.9
+  conf$spark.storage.blockManagerSlaveTimeoutMs <-"6000000s" #Failed during initialize_connection: java.lang.IllegalArgumentException: requirement failed: spark.executor.heartbeatInterval should be less than or equal to spark.storage.blockManagerSlaveTimeoutMs
+  conf$spark.executor.heartbeatInterval <-"6000000s"# "10000000s"
+  conf$spark.network.timeout <- "6000001s"
+  conf$spark.local.dir <- "/mnt/8tb_b/spark_temp/"
+  conf$spark.worker.cleanup.enabled <- "true"
+  conf$"sparklyr.shell.driver-memory"= mem
+  conf$'spark.driver.maxResultSize' <- 0 #0 is ulimmited
+  
+  conf$'spark.sql.legacy.parquet.datetimeRebaseModeInRead' <- 'LEGACY'
+  conf$'spark.sql.legacy.parquet.datetimeRebaseModeInWrite' <- 'LEGACY'
+  
+  conf$'spark.sql.execution.arrow.maxRecordsPerBatch' <- "5000000" #https://github.com/arctern-io/arctern/issues/399
+  
+  #Error: org.apache.spark.sql.AnalysisException: The pivot column variable_clean has more than 10000 distinct values, this could indicate an error. If this was intended, set spark.sql.pivotMaxValues to at least the number of distinct values of the pivot column.;
+  conf$'spark.sql.pivotMaxValues' <- "5000000"
+  
+  sc <<- spark_connect(master = "local", config = conf#,
+                       #version = "2.3.3" #for geospark
+  ) 
+}
+
+restartspark()
+
+
+
+yid_test_exclude <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude/performance/" ,memory=F) %>% collect()
+yid_test_include <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_include/performance/" ,memory=F) %>% collect() #include is broken
+
+performance_include <- yid_test_include %>% collect() %>% group_by(ablation) %>% summarize(rmse_include=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_include=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+performance_exclude <- yid_test_exclude %>% collect() %>% group_by(ablation) %>% summarize(rmse_exclude=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_exclude=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+
+#performance_include %>% full_join(performance_exclude) %>% view()
+
+
+
 
 ########## Library Loads ---------------------------------------
 library(doParallel)
@@ -42,7 +113,7 @@ rhs_codebook_total_coded <- read.csv(file="/mnt/8tb_a/rwd_github_private/TrumpSu
   mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed("}","")  ) %>%
   mutate( variable_clean_255 = variable_clean_255 %>%  stringi::stri_replace_all_fixed("\"","") )  %>%
   mutate(variable_clean_255 = variable_clean_255 %>% janitor::make_clean_names()  )  #for these variable names
-  
+
 dim(rhs_codebook_total_coded)
 #We're also going to drop any acs1s that show up in acs5
 acs5_to_remove <- rhs_codebook_total_coded %>% filter(dataset %in% "acs5") %>% pull(description_stemmed) %>% unique()
@@ -110,29 +181,35 @@ get_lgbm_cv_preds <- function(cv){
   }
   return(preds)
 }
-  
+
 
 library(doParallel)
 cl <- makeCluster(4)
 registerDoParallel(cl)
-  
-  ########## Ablation Loop Include ---------------------------------------
-  verbose=F
-  eligible_variables <- rhs_codebook_total_coded$variable_clean_255
-  print(length(eligible_variables)) #15,815 removing the acs1 in acs5 gets us down to 15k
-  for(group in variable_groups){
+
+########## Ablation Loop Include ---------------------------------------
+verbose=F
+eligible_variables <- rhs_codebook_total_coded$variable_clean_255
+print(length(eligible_variables)) #15,815 removing the acs1 in acs5 gets us down to 15k
+
+variable_groups <- performance_exclude %>% arrange(rmse_exclude) %>% pull(ablation) %>% str_replace("keep_",'') %>% setdiff("exclude_nothing") %>%
+                   str_replace('poverty_income_earnings_food_stamps_labor_force_employment','poverty_income_earnings_food_stamps_labor_force_employment_earner_owner_costs') %>% str_replace('household','household_rooms_vacancy_allocation_of_allocation_rate') #We're cumulatively going to exclude more an more of these
+
+for(g in 1:length(variable_groups)){
     #group="transportation"
-    print(group)
-    ablation=paste0("keep_",group)
+    print(g)
+    ablation=paste0("exclude_",variable_groups[g])
+    ablation_cumulative <- paste0(variable_groups[1:g], collapse=";")
     
-    condition <- rhs_codebook_total_coded[,group] %in% 1 #reversing it for exclude, that and the file path are the only two things I changed for this script
+    setdiff(variable_groups[1:g], colnames(rhs_codebook_total_coded) )
+    condition <- rowSums(rhs_codebook_total_coded[,variable_groups[1:g], drop=F], na.rm=T) %in% 0 #reversing it for exclude, that and the file path are the only two things I changed for this script
     eligible_variables <- rhs_codebook_total_coded$variable_clean_255[condition]
     print(length(eligible_variables))
     print(eligible_variables %>% head(10))
     folds=1:5 #We can iterate quickly by just doing one fold over many variables and then switch it to 6 when we're running the full overnight
     for(fold in folds){
       #fold=1
-      shap_out_file=glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_include/shap/treeshap_long_ablation_{ablation}_fold{fold}.parquet")
+      shap_out_file=glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude_cumulative/shap/treeshap_long_ablation_{ablation}_fold{fold}.parquet")
       if(file.exists(shap_out_file)){next}
       
       tic()
@@ -164,33 +241,33 @@ registerDoParallel(cl)
       
       #Fit 5 fold CV on all possible features
       tic()
-        lightgbm_cv_unpruned <- lgb.cv(
-          params = list(
-            boosting="gbdt", #dart #gbdt #now goss seems slower somehow
-            objective = "regression", 
-            metric = "rmse",
-            learning_rate=0.1, #default 0.1
-            #max_bin=63
-            #max_bin=15,
-            #task="train",
-            #num_leaves = 255,
-            #gpu_use_dp=F,
-            #device = 'gpu',
-            tree_learner = 'feature', #'feature',
-            #gpu_platform_id = 0,
-            #gpu_device_id = 0,
-            is_training_metric=F
-          ),
-          folds = cv_folds_list,
-          data =dtrain ,
-          early_stopping_rounds=10,
-          num_threads=32, #feature parallel makes 128 way worse, 32 somehow faster
-          force_col_wise=T,
-          nrounds=1000,
-          verbose=0
-          #return_cvbooster=T
-        )
-        #So this is 4 minutes
+      lightgbm_cv_unpruned <- lgb.cv(
+        params = list(
+          boosting="gbdt", #dart #gbdt #now goss seems slower somehow
+          objective = "regression", 
+          metric = "rmse",
+          learning_rate=0.1, #default 0.1
+          #max_bin=63
+          #max_bin=15,
+          #task="train",
+          #num_leaves = 255,
+          #gpu_use_dp=F,
+          #device = 'gpu',
+          tree_learner = 'feature', #'feature',
+          #gpu_platform_id = 0,
+          #gpu_device_id = 0,
+          is_training_metric=F
+        ),
+        folds = cv_folds_list,
+        data =dtrain ,
+        early_stopping_rounds=10,
+        num_threads=32, #feature parallel makes 128 way worse, 32 somehow faster
+        force_col_wise=T,
+        nrounds=1000,
+        verbose=0
+        #return_cvbooster=T
+      )
+      #So this is 4 minutes
       toc() #tree_learner feature gets that down to 4 #Shrinking the number of bins to 15 reduced the fit time to 4.5 minutes #this takes 10 minutes, 128 threads was actually slightly faster 9.9 minutes
       
       if(verbose){
@@ -203,16 +280,16 @@ registerDoParallel(cl)
         plot(y_all, y_hat_lightgbm)
         abline(coef = c(0,1)) #  
       }
-     
+      
       print("Find importances")
       tic()
-        importance1=lgb.importance(lightgbm_cv_unpruned$boosters[[1]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
-        importance2=lgb.importance(lightgbm_cv_unpruned$boosters[[2]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
-        importance3=lgb.importance(lightgbm_cv_unpruned$boosters[[3]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
-        importance4=lgb.importance(lightgbm_cv_unpruned$boosters[[4]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
-        #importance5=lgb.importance(lightgbm_cv_unpruned$boosters[[5]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
-        #,importance5
-        importances <- bind_rows(importance1,importance2,importance3,importance4) %>% clean_names() %>%  group_by(variable) %>% summarise(gain=mean(gain), cover=mean(cover), frequency=mean(frequency), folds_used=n()) %>% arrange(desc(gain))
+      importance1=lgb.importance(lightgbm_cv_unpruned$boosters[[1]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
+      importance2=lgb.importance(lightgbm_cv_unpruned$boosters[[2]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
+      importance3=lgb.importance(lightgbm_cv_unpruned$boosters[[3]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
+      importance4=lgb.importance(lightgbm_cv_unpruned$boosters[[4]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
+      #importance5=lgb.importance(lightgbm_cv_unpruned$boosters[[5]]$booster, percentage = TRUE) %>% mutate(variable=Feature %>% str_replace("Column_","") %>% as.numeric()  ) %>% mutate(variable=colnames(x_train)[variable+1])
+      #,importance5
+      importances <- bind_rows(importance1,importance2,importance3,importance4) %>% clean_names() %>%  group_by(variable) %>% summarise(gain=mean(gain), cover=mean(cover), frequency=mean(frequency), folds_used=n()) %>% arrange(desc(gain))
       toc() #30 seconds here
       
       #Here we decide which to keep, requiring it to appear in at least 3 any more or less drives down performance a lot
@@ -222,37 +299,37 @@ registerDoParallel(cl)
       length(vars_pruned)
       dtrain_pruned=lgb.Dataset( x_train[,vars_pruned, drop=F] %>% scale()   %>% Rfast::data.frame.to_matrix(col.names=T) , #it's throwing an error about string size, i'm going to withhold feature names just incase that's the reason
                                  label=yid_train[,'y_share18plus']  %>% Rfast::data.frame.to_matrix(col.names=T), feature_pre_filter=T, max_bin=255) #I can up it to 255 now
-  
+      
       #Refit to the pruned data so we can more easily run shap
       tic()
-        lightgbm_cv_pruned <- lgb.cv(
-          params = list(
-            boosting="gbdt", #dart #gbdt #now goss seems slower somehow
-            objective = "regression", 
-            metric = "rmse",
-            learning_rate=0.1, #default 0.1
-            #max_bin=63
-            #max_bin=15,
-            #task="train",
-            #num_leaves = 255,
-            #gpu_use_dp=F,
-            #device = 'gpu',
-            tree_learner = 'feature', #'feature',
-            #gpu_platform_id = 0,
-            #gpu_device_id = 0,
-            is_training_metric=F
-          ),
-          folds = cv_folds_list,
-          data =dtrain_pruned ,
-          early_stopping_rounds=10,
-          num_threads=32, #feature parallel makes 128 way worse, 32 somehow faster
-          force_col_wise=T,
-          nrounds=1000,
-          verbose=0
-          #return_cvbooster=T
-        )
+      lightgbm_cv_pruned <- lgb.cv(
+        params = list(
+          boosting="gbdt", #dart #gbdt #now goss seems slower somehow
+          objective = "regression", 
+          metric = "rmse",
+          learning_rate=0.1, #default 0.1
+          #max_bin=63
+          #max_bin=15,
+          #task="train",
+          #num_leaves = 255,
+          #gpu_use_dp=F,
+          #device = 'gpu',
+          tree_learner = 'feature', #'feature',
+          #gpu_platform_id = 0,
+          #gpu_device_id = 0,
+          is_training_metric=F
+        ),
+        folds = cv_folds_list,
+        data =dtrain_pruned ,
+        early_stopping_rounds=10,
+        num_threads=32, #feature parallel makes 128 way worse, 32 somehow faster
+        force_col_wise=T,
+        nrounds=1000,
+        verbose=0
+        #return_cvbooster=T
+      )
       toc()
-  
+      
       print("Find Shaps")
       #Now get shap values for every test observation, and then see how the RMSE would change if that var weren't in the model. Order the vars from least to most important by that amount.
       y_hat_lightgbm_cv_pruned <- get_lgbm_cv_preds(lightgbm_cv_pruned)
@@ -265,11 +342,11 @@ registerDoParallel(cl)
       unified2 <- lightgbm.unify(lightgbm_cv_pruned$boosters[[2]]$booster, x_train[,vars_pruned, drop=F]   )
       treeshap2 <- treeshap(unified2,  x_train[cv_folds_list[[2]],vars_pruned, drop=F]  %>% as.data.frame() , verbose =0)
       treeshap2_hat <- as.matrix(y_hat_lightgbm_cv_pruned[cv_folds_list[[2]]]) - treeshap2$shaps
-  
+      
       unified3 <- lightgbm.unify(lightgbm_cv_pruned$boosters[[3]]$booster, x_train[,vars_pruned, drop=F]   )
       treeshap3 <- treeshap(unified3,  x_train[cv_folds_list[[3]],vars_pruned, drop=F]  %>% as.data.frame() , verbose =0)
       treeshap3_hat <- as.matrix(y_hat_lightgbm_cv_pruned[cv_folds_list[[3]]]) - treeshap3$shaps
-  
+      
       unified4 <- lightgbm.unify(lightgbm_cv_pruned$boosters[[4]]$booster, x_train[,vars_pruned, drop=F]   )
       treeshap4 <- treeshap(unified4,  x_train[cv_folds_list[[4]],vars_pruned, drop=F]  %>% as.data.frame() , verbose =0)
       treeshap4_hat <- as.matrix(y_hat_lightgbm_cv_pruned[cv_folds_list[[4]]]) - treeshap4$shaps
@@ -284,17 +361,17 @@ registerDoParallel(cl)
       shap_rmse <- sapply(bind_rows(treeshap1_hat,treeshap2_hat,treeshap3_hat,treeshap4_hat), FUN=function(x) Metrics::rmse(x, yid_train[ordering,'y_share18plus']$y_share18plus)) #the rmse of the altered prediction #treeshap5_hat
       
       variable_shape_order <- names(rev(sort(shap_rmse))) %>% as.character()
-  
+      
       #Now tune the model, varying depth, leaves, and how many features to leave in in order of importance
       #Instead of having to iterate now over all X-hundred features, we can sample 30ish times and be reasonably confident we picked the right amount. Plus we get to vary other parameters.
       #https://cran.r-project.org/web/packages/ParBayesianOptimization/vignettes/tuningHyperparameters.html
-
+      
       #When there's too much missingness it fails
       scoringFunction <- function(max_depth=-1L,  num_leaves=2, bagging_fraction=1, feature_fraction=1, features_to_keep) { #min_data_in_leaf learning_rate
         print(features_to_keep)
         try({
           dtrain_pruned_subset=lgb.Dataset( x_train[,variable_shape_order[1:features_to_keep], drop=F] %>% scale()  %>% Rfast::data.frame.to_matrix(col.names=T) , #it's throwing an error about string size, i'm going to withhold feature names just incase that's the reason
-                                     label=yid_train[,'y_share18plus']  %>% Rfast::data.frame.to_matrix(col.names=T), feature_pre_filter=T, max_bin=255) #I can up it to 255 now
+                                            label=yid_train[,'y_share18plus']  %>% Rfast::data.frame.to_matrix(col.names=T), feature_pre_filter=T, max_bin=255) #I can up it to 255 now
           
           lightgbm_cv_pruned_subset <- lgb.cv(
             params = list(
@@ -326,7 +403,7 @@ registerDoParallel(cl)
             )
           )
         })
-
+        
         return(
           list( 
             Score = -999999 #it maximizes so you have to do negative root mean squared
@@ -340,19 +417,19 @@ registerDoParallel(cl)
       condition <- runif(n=length(feature_range)) > (feature_range/num_features)^(1/10)
       if(sum(condition)<10){condition <- rep(T,num_features)}
       feature_range_surviving <- feature_range[condition]
-
+      
       clusterEvalQ(cl,expr= {
         library(lightgbm)
         library(tidyverse)
       })
       clusterExport(cl,c('cv_folds_list','x_train','yid_train','variable_shape_order','scoringFunction'))
-
+      
       print("Subset features")
       library(pbapply)
       results <- pblapply(feature_range_surviving, FUN = function(x){ scoringFunction(features_to_keep=x) } , cl=cl)
       optObj <- bind_rows(results)
       optObj$features_to_keep=feature_range_surviving
-     
+      
       
       #Final fit, to all of the data, with our final subset of features, and final paramaters
       optObj_best <- optObj %>% janitor::clean_names() %>% arrange(score %>% desc()) %>% head(1)
@@ -390,8 +467,8 @@ registerDoParallel(cl)
       #      Min.   1st Qu.    Median      Mean   3rd Qu.      Max. 
       #0.0000119 0.0205543 0.0451527 0.0548780 0.0757547 0.3324835 
       suppressMessages(
-        yid_test %>% mutate(y_hat_test_pruned_optimized=y_hat_test_pruned_optimized, fold=fold, ablation=ablation) %>% 
-          arrow::write_parquet(glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_include/performance/yid_test_ablation_{ablation}_fold{fold}.parquet"))
+        yid_test %>% mutate(y_hat_test_pruned_optimized=y_hat_test_pruned_optimized, fold=fold, ablation=ablation, ablation_cumulative=ablation_cumulative) %>% 
+          arrow::write_parquet(glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude_cumulative/performance/yid_test_ablation_{ablation}_fold{fold}.parquet"))
       )
       
       
@@ -412,11 +489,11 @@ registerDoParallel(cl)
                        pivot_longer(-obs, values_to = "covariate_value",names_to = "variable_clean_255") )  %>% 
           left_join(rhs_codebook_total_coded, by=c('variable_clean_255') ) %>% #join the codebook on it
           group_by(variable) %>% 
-            mutate(shap_variable_total= shap %>% abs() %>% sum() ) %>%
-            mutate(covariate_value_scaled= covariate_value %>% scale() ) %>%
+          mutate(shap_variable_total= shap %>% abs() %>% sum() ) %>%
+          mutate(covariate_value_scaled= covariate_value %>% scale() ) %>%
           ungroup() %>%
           mutate(test_fold=fold)  %>%
-          mutate(ablation=ablation)
+          mutate(ablation=ablation, ablation_cumulative=ablation_cumulative) 
       )
       suppressMessages(
         treeshap_long %>% 
@@ -431,12 +508,11 @@ registerDoParallel(cl)
     #After each var, fire off a script to knit the results so you can look at them while it goes
     #command <- "Rscript -e 'library(rmarkdown); rmarkdown::render(\"/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/Douglass_et_al_2021_WhatExplainsVaccinationRates_SummarizeResults.Rmd\", \"html_document\")'"
     #system(command, wait = F, ignore.stdout = T, show.output.on.console =F)
-
     
-  }
-  
-  stopCluster(cl)
-  registerDoSEQ()
+}
+
+stopCluster(cl)
+registerDoSEQ()
 
 
 

@@ -9,9 +9,6 @@ bibliography: WhatExplainsUSCovid19VaccinationRates.bib
 
 ```{r}
 
-#Sys.setenv(ARROW_WITH_SNAPPY = "ON")
-#install.packages('arrow')
-
 fromscratch=F
 
 knitr::opts_chunk$set(fig.width = 8, fig.height = 8, message=F, warning=F, echo=F, results=F)
@@ -2012,9 +2009,7 @@ dat <- read.dta13("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/da
 #565) STNAME	State name
 #566) CNTYCODE	County code
 #567) CNTYNAME	County name
-dat_long <- dat %>% 
-            mutate_if(is.numeric, replace_na,0) %>% #There's a bunch of NA which should be zeros
-               pivot_longer(-c(fips,stcode,stabbr,stname,cntycode,cntyname))
+dat_long <- dat %>% pivot_longer(-c(fips,stcode,stabbr,stname,cntycode,cntyname))
 dat_long_clean <- dat_long %>% mutate(name=name %>% tolower() %>% trimws()) %>% 
   left_join(thearda_codebook %>% dplyr::select(name=variable,description) %>% mutate(name=name %>% tolower()  %>% str_replace('[0-9]*\\) ','') %>% trimws()  )  )
 
@@ -2028,9 +2023,6 @@ rhs_thearda <- dat_long_clean %>% dplyr::select(fips, name, description, value) 
 rhs_thearda  %>% rex_clean() %>% arrow::write_parquet(glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs/rhs_thearda.parquet"))
 
 rhs_thearda %>% mutate(fips_variable=paste0(fips,variable)) %>% filter(duplicated(fips_variable)) #no dupes here yet so it's getting introduced lower
-
-
-#therda_original_church_of_god_total_number_of_congregations_2010
 
 ```
 ## Climate Change
@@ -2634,6 +2626,7 @@ dim(rhs_combined_wide_temp)
 
 #rhs_combined_wide_temp %>% filter(fips==1115) %>% View()
 
+
 rhs_combined_wide <- rhs_combined_wide_temp %>%
                       pivot_wider(names_from=variable_clean, values_from=value) 
                       #sdf_pivot(fips ~ variable_clean, #for whatever reason it is really bad at going long to wide
@@ -2642,13 +2635,7 @@ rhs_combined_wide <- rhs_combined_wide_temp %>%
 dim(rhs_combined_wide) #5093 35,583 #sticking with only or nearly only percentages reduces the cols to 35k
 rhs_combined_wide_variables <- data.frame(colnames(rhs_combined_wide))
 
-not_missingness <- colSums( !is.na(rhs_combined_wide) ) # / nrow(rhs_combined_wide)
-table(not_missingness<1000) #there are 6k that have fewer than 500 obs
-colnames(rhs_combined_wide)[not_missingness<1000] #They're almost all peurto rico related
-
-rhs_combined_wide[,not_missingness>1000]   %>% arrow::write_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_wide/rhs_combined_wide.parquet") #add the parquet to the pile 
-
-#rhs_combined_wide <- arrow::read_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_wide/rhs_combined_wide.parquet") #add the parquet to the pile 
+rhs_combined_wide   %>% arrow::write_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_wide/rhs_combined_wide.parquet") #add the parquet to the pile 
 
 #rhs_combined_wide  %>% spark_write_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_wide/rhs_combined_wide/", mode="overwrite")
 
@@ -2726,7 +2713,7 @@ Create and save an imputed dataset
 
 ```{r, eval=F}
 
-x_train <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train.Rds")
+x_train <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs/x_train.Rds")
 dim(x_train)
 missingness_df <- data.frame(missingness=colMeans(is.na(x_train)), var=colnames(x_train)) 
 summary(missingness_df$missingness)
@@ -2734,9 +2721,7 @@ table(missingness_df$missingness>0) #4k have some missingness
 
 x_train_df <- x_train %>% as.data.frame()
 library(randomForestSRC)
-options(mc.cores = 64)
-options(rf.cores=64, mc.cores=64)
-x_train_imputed <- impute.rfsrc(data = x_train_df, #this takes a long time now
+x_train_imputed <- impute.rfsrc(data = x_train_df,
                                 nodesize = 1, nsplit = 10, nimpute = 1,
                                 fast = T,
                                 ntree =100
@@ -2771,23 +2756,18 @@ summary(missingness_df_imputed$missingness)
 # imputedList <- completeData(miceObjPar)
 
 #x_train_imputed <- imputedList[[1]]
-saveRDS(x_train_imputed, "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train_imputed.Rds")
+saveRDS(x_train_imputed, "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs/x_train_imputed.Rds")
 
 ```
 
 # Cluster Variables symantically here
-
-Switched to  hand coding
 
 ```{r}
 
 rhs_codebook <- arrow::open_dataset(sources="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_codebook_spark/") %>% collect()
 
 rhs_codebook <- rhs_codebook %>% 
-                mutate(description_stemmed= description %>% 
-                                            str_replace_all("per capita|percapita|per 1000|percent$|perc$|perc 1,000|^percent|^perc","") %>% tolower() %>% trimws() %>% str_replace("  "," ") %>% tolower() %>%
-                                            str_replace_all("[0-9]","#") %>% str_replace_all("#{1,4}","#")
-                         )  %>%
+                mutate(description_stemmed= description %>% str_replace("per capita|percapita|per 1000|percent$|perc$|perc 1,000|^percent|^perc","") %>% tolower() %>% trimws() %>% str_replace("  "," ") %>% tolower()  )  %>%
                 mutate(description_sentence= paste0("This variable measures ",description_stemmed  ,".") )
 
 x_all <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train.Rds")
@@ -2796,26 +2776,19 @@ x_all <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/dat
 setdiff(rhs_codebook$variable_clean, colnames(x_all)) %>% length()
 setdiff( colnames(x_all), rhs_codebook$variable_clean) %>% length() #ok this is zero, so all of x appears in the variable clean column
 
-#These are the subset actually in the x
 rhs_codebook_total <- rhs_codebook %>% filter(variable_clean %in% colnames(x_all) ) #subset the codebook to just what we're using
 
-rhs_codebook_total %>% write.csv(file="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_codebook_total.csv")
-
-#head(rhs_codebook$description)
+head(rhs_codebook$description)
 head(rhs_codebook$description_sentence)
 
-description_sentence_unique_df <- rhs_codebook_total %>% dplyr::select(dataset, description_sentence) %>% filter(!duplicated(description_sentence))
-
-description_sentence_unique <- description_sentence_unique_df$description_sentence  
-description_sentence_unique %>% length() #12,567 #13228 #19794 #29076
-
-
+description_sentence_unique <- rhs_codebook_total$description_sentence %>% unique 
+description_sentence_unique %>% length() #29076
 
 ```
 
 
 
-```{python, eval=F}
+```{python}
 
 
 #pip install -U sentence-transformers
@@ -2826,11 +2799,14 @@ from sentence_transformers import SentenceTransformer
 #https://huggingface.co/sentence-transformers/paraphrase-multilingual-mpnet-base-v2 #says you have to use the sentence transformers front end
 model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-mpnet-base-v2' ) #"paraphrase-mpnet-base-v2" 'paraphrase-MiniLM-L6-v2' #this is downloading crazy slow 400mb but hours to download
 
+#Our sentences we like to encode
+sentences = ['This framework generates embeddings for each input sentence',
+    'Sentences are passed as a list of string.', 
+    'The quick brown fox jumps over the lazy dog.']
+
 #Sentences are encoded by calling model.encode()
 sentence_embeddings = model.encode(r.description_sentence_unique)
 sentence_embeddings.shape
-
-#del SentenceTransformer
 
 #If it gets bigger you can switch to faiss and kmeans but wanted to stick with hclust for as long as I could
 #https://github.com/facebookresearch/faiss/wiki/Faiss-building-blocks:-clustering,-PCA,-quantization
@@ -2863,60 +2839,20 @@ sentence_embeddings.shape
 ```
 
 
-```{r, eval=F}
-
-x_train_imputed2 <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train_imputed.Rds")
-
-x_train_imputed2
-d_kl <- x_train_imputed2[,1:100]  %>% as.matrix() %>% scale() %>% parallelDist::parDist(threads = 64, method="euclidean") #%>% t()
-hc <- d_kl %>% fastcluster::hclust(method="ward.D2") #yup it's just the dist that's slow. Have to 
-
-install.packages('parmigene')
-library(parmigene)
-
-mat <- matrix(rnorm(1000), nrow=10)
-knnmi.all(mat, 5)
-
-library(tictoc)
-library(infotheo)
-tic()
-  #d_mi <- x_train_imputed2[,1:1000] %>% t() %>% as.matrix() %>% discretize() %>% mutinformation()
-  d_mi <- x_train_imputed2[,1:1000]  %>% t() %>% as.matrix() %>% discretize() %>% knnmi.all(k=5)
-  dim(d_mi)
-toc() #1 min for 1k
-
-if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager")
-BiocManager::install("Informeasure")
-install.packages('Informeasure')
-
-
-#So we're going to go through this and cluster
-#We're really only concerned with acs1 , acs5 
-table(description_sentence_unique_df$dataset)
-
-#I think the idea is to cluster but only within datasets now.
-
-condition <- description_sentence_unique_df$dataset %in% c('acs1','acs5','census2020','census_2020_actual')
+```{r}
 
 #install.packages("fastcluster")
 library(fastcluster)
 library(reticulate)
 py$sentence_embeddings %>% dim()
-m <- py$sentence_embeddings[condition,] %>% as.matrix()
-rownames(m) <- description_sentence_unique[condition]
-dim(m) #11691 768
+m <- py$sentence_embeddings
+rownames(m) <- description_sentence_unique
+dim(m)
 
 #library(devtools)
 #install_github("alexeckert/parallelDist")
 #30k is very fast 150k was rough and suggest switching to faiss 
 d <- m %>%   parallelDist::parDist(threads = 64, method="cosine") #I need to use cosine distance I think this is similarity so I need to do 1-
-
-d_kl <- x_all[,1:100] %>% t() %>% parallelDist::parDist(threads = 64, method="kullback")
-
-hc_kl <- d_kl %>% fastcluster::hclust(method="ward.D2") #yup it's just the dist that's slow. Have to 
-
-
 hc <- d %>% fastcluster::hclust(method="ward.D2") #yup it's just the dist that's slow. Have to 
   #ape::as.phylo() %>% 
   #plot()
@@ -2958,11 +2894,10 @@ plot(within_sum_squares/within_sum_squares[1])
 plot(diff(within_sum_squares))
 df <- data.frame(x=1:length(diff(within_sum_squares)),y=diff(within_sum_squares)*-1)
 lm1 <- lm(y~1+x+I(x^2),data= df)
-loess1 <- stats::loess(y~x, data=df, span=0.075)
+loess1 <- stats::loess(y~x, data=df, span=0.05)
 df$yhat <- loess1$fitted
 df$resid <- df$y/df$yhat
 df$resid_125 <- df$resid>1.25 | df$yhat>2000
-table(df$resid_125)
 ggplot(df, aes(x=x)) + geom_point(aes(y=y, color=resid_125)) + geom_line(aes(y=yhat), color="blue") #geom_smooth(aes(y=y), span = 0.2)
 sum(df$resid_125)
 
@@ -2978,24 +2913,68 @@ print(optimal_clusters)
 #install.packages('cValid')
 #library(cValid)
 
+
+get_DV_ON_RHS <- function(cuts){
+  print(cuts)
+  dontsplit <- description_sentence_unique[description_sentence_unique %>% str_detect("DV_ON_RHS")]
+  clusters <-  hc %>% cutree(cuts)
+  number_split <- clusters[dontsplit]
+  grouped_with <- sum(clusters %in% number_split)-length(dontsplit)
+  return(grouped_with)
+}
+within_DV_ON_RHS <- sapply(1:200, get_DV_ON_RHS)
+plot(within_DV_ON_RHS)
+which(within_DV_ON_RHS==0) %>% min() #what is the minimum where politics is split off on its own? 96 99
+
+
+get_politics <- function(cuts){
+  print(cuts)
+  dontsplit <- description_sentence_unique[description_sentence_unique %>% str_detect("politics")]
+  clusters <-  hc %>% cutree(cuts)
+  number_split <- clusters[dontsplit]
+  grouped_with <- sum(clusters %in% number_split)-length(dontsplit)
+  return(grouped_with)
+}
+within_getpolitics <- sapply(1:200, get_politics)
+plot(within_getpolitics)
+which(within_getpolitics==0) %>% min() #what is the minimum where politics is split off on its own? 96 99
+
+get_masks <- function(cuts){
+  print(cuts)
+  dontsplit <- description_sentence_unique[description_sentence_unique %>% str_detect("mask")]
+  clusters <-  hc %>% cutree(cuts)
+  number_split <- clusters[dontsplit]
+  grouped_with <- sum(clusters %in% number_split)-length(dontsplit)
+  return(grouped_with)
+}
+within_get_masks <- sapply(1:200, get_masks)
+plot(within_get_masks)
+which(within_get_masks==0) %>% min() #what is the minimum where politics is split off on its own? 96 99
+
+smallest_cluster <- max(
+  which(within_getpolitics==0) %>% min(),
+  which(within_get_masks==0) %>% min(),
+  which(within_DV_ON_RHS==0) %>% min()
+)
+
 #https://github.com/jlmelville/uwot
 library(stringr)
-df_clustered <- data.frame(description_sentence = description_sentence_unique[condition])
+df_clustered <- data.frame(description_sentence = description_sentence_unique)
 dim(df_clustered)
-break_points = which(df$resid_125==T)
-#break_points=break_points[break_points<break_points[break_points>smallest_cluster][1]] #pick the smallest just after our smallest hand picked cluster
-for(i in  break_points) {
-  #print(i)
+cluster_cuts <- which(df$resid_125==T)+1
+cluster_cuts <- cluster_cuts[cluster_cuts<smallest_cluster]
+cluster_cuts <- c(cluster_cuts,smallest_cluster) %>% unique()
+for(i in cluster_cuts ) {
+  print(i)
   varname <- paste0("k",str_pad(i, 3, pad = "0"))
   df_clustered[,varname] <- paste0("k",i,"_", hc %>% cutree(i)) #%>% str_pad(3, pad = "0")
 }
 df_clustered
-dim(df_clustered)
+
 #The problem is that cuttree keeps cutting whether it needs to be or not. So you want to pull up a level if all the descendants share that seem lead
 
 
 write.csv(df_clustered, "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/df_clustered.csv")
-
 
 p_load(data.tree)
 df_clustered$pathString <- apply(df_clustered[,-1], 1, paste, collapse="/")
@@ -3006,205 +2985,38 @@ print(population, "description_sentence", limit = 100)
 
 library(igraph)
 g <- as.igraph(population, directed=TRUE)
-#detach('package:reticulate', unload = TRUE)
-#I'm getting python warnings which fill the console/rmd and crash things. 
+
 for(i in 1:50){
   for(v in V(g)) {
-    #print(v)
-    sink(file("all.Rout", open = "wt"))
-    options(warn=-1)
-      tryCatch({
-        children <- neighbors(g, v, mode = c("out"))
-        parents <- neighbors(g, v, mode = c("in"))
-        if(length(parents)==1 & length(children)==1){
-          print("deleting")
-          g <<- g %>% add_edges(c(which(V(g)$name == parents[1]$name) , which(V(g)$name == children[1]$name) ))
-          g <<- delete_vertices(g, v)
-        }
-      }, error=function(e){})
-    options(warn = 0) 
-    sink()
+    print(v)
+    try({
+      children <- neighbors(g, v, mode = c("out"))
+      parents <- neighbors(g, v, mode = c("in"))
+      if(length(parents)==1 & length(children)==1){
+        print("deleting")
+        g <<- g %>% add_edges(c(which(V(g)$name == parents[1]$name) , which(V(g)$name == children[1]$name) ))
+        g <<- delete_vertices(g, v)
+      }
+    })
   }
 }
 
-
-
-
+V(g) #277 vertices It would take 7 days to fit all of them
 
 #devtools::install_github("USCbiostats/aphylo")
 library(aphylo)
 g_df <- g %>% as_data_frame() 
 levs <- unique(c(g_df$from, g_df$to)) %>% sort()
-#g_df$from <- factor(g_df$from, levels= levs ) %>% as.numeric()
-#g_df$to <- factor(g_df$to, levels= levs )  %>% as.numeric()
+g_df$from <- factor(g_df$from, levels= levs ) %>% as.numeric()
+g_df$to <- factor(g_df$to, levels= levs )  %>% as.numeric()
 
-library(aphylo)
-p_load(phylogram)
 g_phylo <- g_df %>% as.matrix() %>% as.phylo() 
-g_dendro <- g_phylo %>% phylogram::as.dendrogram.phylo()
-
-library(dendextend)
-#https://stackoverflow.com/questions/14118033/horizontal-dendrogram-in-r-with-labels
-#dendr <- dendro_data(g_dendro)
-#dendr$labels <- dendr$labels %>% 
-#                rename(label_old=label) %>% 
-#                left_join(df_clustered %>% 
-#                         dplyr::select(label=description_sentence,label_old=k131) %>%   #you have to pick this last column name by hand right now
-#                         mutate(label = label %>% str_replace_all('This variable measures ','')) %>%
-#                         group_by(label_old) %>% mutate(var_count=n()) %>% filter(row_number()==1) %>% distinct() 
-#                         ) %>% 
-#                         dplyr::select(-label_old) %>% mutate(label=paste0("(",var_count,") ", label))
-
-#p <- ggplot() + 
-#      geom_segment(data=segment(dendr), aes(x=x, y=(y+1) %>% sqrt()  , xend=xend, yend=(yend+1) %>% sqrt())) + 
-#      geom_text(data=label(dendr), aes(x=x, y=y+1, label=label, hjust=0), size=3) +
-#      coord_flip()  + scale_y_reverse(limits=c(3.5, -2.5)) +  #
-#      theme(axis.line.y=element_blank(),
-#            axis.ticks.y=element_blank(),
-#            axis.text.y=element_blank(),
-#            axis.title.y=element_blank(),
-#            panel.background=element_rect(fill="white"),
-#            panel.grid=element_blank())
-
-#ggsave(filename="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_variable_dendro.pdf", plot=p, width = 50, height=25, limitsize = FALSE)
-
-
-#Basically we're going to be replacing everything here
-
-leaves <-  df_clustered %>% 
-                 dplyr::select(label=description_sentence,label_old=k196) %>%   #you have to pick this last column name by hand right now
-                 mutate(label = label %>% str_replace_all('This variable measures ','')) %>%
-                 group_by(label_old) %>% mutate(var_count=n()) %>% filter(row_number()==1) %>% distinct() %>%
-                 dplyr::select(-label_old) %>% mutate(label=paste0("(",var_count,") ", label))
-g_df_thinned <- g %>%
-        as_data_frame() %>%
-        left_join(leaves %>% dplyr::select(to=label_old, label)) %>%
-        mutate(to=coalesce(label, to)) %>%
-        dplyr::select(from,to)
-library(aphylo)
 p_load(phylogram)
-g_phylo_thinned <- g_df_thinned %>% as.matrix() %>% as.phylo() 
-g_dendro_thinned <- g_phylo_thinned %>% phylogram::as.dendrogram.phylo()
+g_dendro <- g_phylo %>% phylogram::as.dendrogram()
 
+library(networkD3)
+radialNetwork(as.radialNetwork(g_dendro))
 
-library(dendextend)
-#https://stackoverflow.com/questions/14118033/horizontal-dendrogram-in-r-with-labels
-
-df_clustered_thinned <- ToDataFrameTypeCol(as.Node(g_dendro_thinned)) #only 8 levels so we can totally make this a table
-df_clustered_thinned$level_1 <- NULL
-
-options(knitr.kable.NA = '') #https://stackoverflow.com/questions/53678412/make-na-values-in-table-just-blank-cells-when-using-cell-spec-in-kableextra
-library(kableExtra)
-df_clustered_thinned %>%
-        kbl(format='html', padding=0 ,
-            booktabs = TRUE,
-            longtable = TRUE, 
-            escape = F#,
-            #align = c('l', 'c', 'c', 'c', 'c', 'l', 'c'), 
-            #col.names = c("", "RMSE", "MAE", "Feat.","Δ MAE by St.","Feature","Shap","Marginal Fx.")
-            ) %>% 
-        kable_paper("striped", full_width = F) %>%
-        kable_styling(bootstrap_options="condensed") %>%
-        row_spec(row=0, angle = 0, align='l', hline_after=T) %>%
-        #add_header_above(c(" " = 1, "Model Performance (Cumulative Ablation of Top Performing Feature Clusters)" = 4, "Feature Performance (Top Cluster)" = 3)) %>%
-        #column_spec(5, width = "4cm" )  %>%
-        #column_spec(8, width = "1cm" )  %>%
-        #column_spec(8, image = spec_plot(top_5_shap_by_covariate_list, same_lim = F)) %>%
-        collapse_rows(columns = 1:8, valign = "top") 
-
-df_clustered_thinned %>% saveRDS('/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/df_clustered_thinned.Rds')
-
-#install.packages("huxtable")
-library(huxtable)
-df_clustered_thinned_ht <- as_hux(df_clustered_thinned) %>% theme_compact()  #%>% set_all_borders(brdr(0.0, "solid", "red")) #ok that's not the spacing
-
-for(i in 1:ncol(df_clustered_thinned_ht) ) { #start on row 2 because 1 is the columns
-  #print(i)
-  groups <- apply(df_clustered_thinned[1:nrow(df_clustered_thinned) ,1:i] %>% as.matrix() ,1, paste0, collapse="_")  #Have to use the original
-  groups_unique <- groups %>% unique()
-  for(g in groups_unique ){
-      start <- (which(groups==g) %>% min())+1
-      end <- (which(groups==g) %>% max())+1
-      series <- start:end
-      df_clustered_thinned_ht <- df_clustered_thinned_ht %>%
-                                 merge_cells(row=series, col=i)  %>% 
-                                 set_left_border(row=series, col=i, value = 0.4)  %>% 
-                                 set_top_border(row=start, col=i, value = 0.4) 
-      
-  }
-}
-
-for(i in 2:nrow(df_clustered_thinned_ht)){ #start on row 2 because 1 is the columns
-  #print(i)
-  end <- ncol(df_clustered_thinned_ht)
-  start <- which(is.na(df_clustered_thinned_ht[i,]))
-  if(length(start)>0){
-    start <- min(start)-1
-    #print(i)
-    series <- c(start,end)
-    #print(series)
-    df_clustered_thinned_ht <- df_clustered_thinned_ht %>%
-                                merge_cells(row=i, series) %>% 
-                                set_right_border(row=i, col=start, value = 0.4) 
-  }
-}
-
-df_clustered_thinned_ht <- df_clustered_thinned_ht %>% set_valign(value='middle' )  #%>% merge_repeated_rows() 
-
-valign(df_clustered_thinned_ht)
-
-df_clustered_thinned_ht <- df_clustered_thinned_ht %>% 
-      set_background_color(evens, everywhere, "grey95") #%>% 
-      #set_background_color(odds, everywhere, NULL) 
-
-df_clustered_thinned_ht[1,] <- rep("",  df_clustered_thinned_ht %>% ncol())
-#df_clustered_thinned_ht 
- 
-#df_clustered_thinned_ht %>% quick_html()
-#%>% map_text_color(by_regex("berry" = "red4", "navy"))
-
-
-```
-
-```{r, eval=F}
-
-
-df_clustered_thinned_ht %>%
-  mutate(level_5=ifelse(level_2=='1' & level_3=='1' &  level_4=='1' &  level_5=='1',"race/ancestry/language",level_5)) %>%
-  mutate(level_5=ifelse(level_2=='1' & level_3=='1' &  level_4=='1' &  level_5=='2',"race/ancestry/language",level_5)) %>%
-  mutate(level_5=ifelse(level_2=='1' & level_3=='1' &  level_4=='1' &  level_5=='3',"race/ancestry/language",level_5)) %>%
-  #mutate(level_5=ifelse(level_2=='1' & level_3=='1' &  level_4=='1' &  level_5=='1',"race/ancestry/language",level_5)) %>%
-  
-  set_font_size(value=7)  %>% 
-  set_all_padding(value="0px")  %>%
-  set_tb_padding(value="0px")  %>% 
-  set_bottom_border(row = nrow(df_clustered_thinned_ht), col = everywhere) %>% 
-  set_caption("Hierarchical Clustering of Demographic Features<br>2020 Census (estimated), American Community Survey (5 Year, 1 year)") %>% set_caption_pos("topleft") %>%
-  #quick_pdf( file = "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/df_clustered_thinned_ht.pdf")
-  quick_html( file = "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/df_clustered_thinned_ht.html") 
-
-```
-
-RHS by hand
-
-I think the aesthetic is to never split across datasets
-
-```{r}
-
-rhs_codebook_total
-
-rhs_codebook_total %>% dplyr::select(dataset) %>% count(dataset)
-
-```
-
-
-
-```{r}
-
-
-
-#library(networkD3)
-#radialNetwork(as.radialNetwork(g_dendro))
 
 #ok so how are we going to label these clusters?
 #I tried to use fancy language models to do it automagically but they failed me
@@ -3347,8 +3159,7 @@ df_clustered$y <- m_umap[,2]
 df_clustered %>% ggplot(aes(x,y, col=k_smallest %>% as.factor())) + geom_point() + theme(legend.position = "none") #
 
 rhs_codebook_total_clustered <- rhs_codebook_total %>% 
-  left_join(df_clustered) %>% 
-  mutate(variable_clean_255 = abbreviate(variable_clean, 255, strict=T)  ) %>%
+  left_join(df_clustered) %>% mutate(variable_clean_255 = abbreviate(variable_clean, 255, strict=T)  ) %>%
   mutate(variable_clean_255_dupe = duplicated(variable_clean_255)) %>%
   mutate(variable_clean_255 = ifelse(variable_clean_255_dupe, variable_clean %>% abbreviate(200, strict=T) %>% paste0(row_number()) , variable_clean_255 )     )  #for the 500 or so var names that couldn't be uniquely shortened we just add a number 
   

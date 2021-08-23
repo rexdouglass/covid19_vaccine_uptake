@@ -19,3 +19,4 @@ results_include
 logs
 results_exclude
 data/
+results_exclude_cumulative

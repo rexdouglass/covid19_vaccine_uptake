@@ -6,7 +6,6 @@ rm(list = ls())
 gc()
 
 ########## Library Loads ---------------------------------------
-library(doParallel)
 library(pacman)
 p_load(tidyverse)
 Sys.setenv(LD_LIBRARY_PATH="/usr/lib/cuda:/usr/lib/cuda/lib64:/usr/lib/cuda/include:" %>% paste0(Sys.getenv("LD_LIBRARY_PATH") ) )
@@ -29,19 +28,28 @@ library(keras)
 #  restart_session = TRUE,
 #  conda_python_version = "3.7",
 #)
+
+knitr::opts_chunk$set(fig.width = 8, fig.height = 8, message=F, warning=F, echo=F, results=F)
+
 #Library Loads
 p_load(tictoc)
 p_load(janitor)
 p_load(tidylog)
 p_load(stringr)
+p_load(ggdag)
+p_load(data.table)
+p_load(sf)
 p_load(glue)
 p_load(scales)
+options(tigris_use_cache = TRUE)
 
 library(tidyverse)
 
 ########## Data Loads ---------------------------------------
 
 #install.packages("huxtable")
+library(huxtable)
+library(tidyverse)
 library(stringi)
 rhs_codebook_total_coded <- read.csv(file="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/rhs_codebook_total_coded.csv") %>% 
   janitor::clean_names() %>% #for these columns
@@ -105,15 +113,16 @@ get_lgbm_cv_preds <- function(cv){
 }
   
 
-library(doParallel)
-cl <- makeCluster(4)
-registerDoParallel(cl)
   
   ########## Ablation Loop Include ---------------------------------------
   verbose=F
   eligible_variables <- rhs_codebook_total_coded$variable_clean_255
   print(length(eligible_variables)) #33176
   for(group in variable_groups){
+    
+    library(doParallel)
+    cl <- makeCluster(4)
+    registerDoParallel(cl)
     
     print(group)
     ablation=paste0("keep_",group)
@@ -269,120 +278,102 @@ registerDoParallel(cl)
       #Now tune the model, varying depth, leaves, and how many features to leave in in order of importance
       #Instead of having to iterate now over all X-hundred features, we can sample 30ish times and be reasonably confident we picked the right amount. Plus we get to vary other parameters.
       #https://cran.r-project.org/web/packages/ParBayesianOptimization/vignettes/tuningHyperparameters.html
-
-      #When there's too much missingness it fails
-      scoringFunction <- function(max_depth=-1L,  num_leaves=2, bagging_fraction=1, feature_fraction=1, features_to_keep) { #min_data_in_leaf learning_rate
-        #print(features_to_keep)
-        try({
-          dtrain_pruned_subset=lgb.Dataset( x_train[,variable_shape_order[1:features_to_keep]]  %>% Rfast::data.frame.to_matrix(col.names=T) , #it's throwing an error about string size, i'm going to withhold feature names just incase that's the reason
-                                     label=yid_train[,'y_share18plus']  %>% Rfast::data.frame.to_matrix(col.names=T), feature_pre_filter=T, max_bin=255) #I can up it to 255 now
-          
-          lightgbm_cv_pruned_subset <- lgb.cv(
-            params = list(
-              boosting="gbdt", #dart #gbdt
-              objective = "regression", 
-              metric = "rmse",
-              learning_rate=0.1, #learning_rate,#, #default 0.1
-              num_leaves=num_leaves %>% round(),
-              #" with `feature_pre_filter=true` may cause unexpected behaviour for features that were pre-filtered by the larger "
-              #min_data_in_leaf=min_data_in_leaf %>% round(), #we set this in feature_pre filter
-              max_depth=max_depth %>% round()#,
-              #bagging_fraction=bagging_fraction,
-              #feature_fraction = feature_fraction
-            ),
-            folds = cv_folds_list,
-            data =dtrain_pruned_subset ,
-            early_stopping_rounds=10,
-            num_threads=21, #going to lower this to 21 from 32 and see if we can't parallel 3 of them
-            force_col_wise=T,
-            nrounds=1000,
-            #return_cvbooster=T,
-            verbose=0
-          )
-          
-          return(
-            list( 
-              Score = lightgbm_cv_pruned_subset$best_score*-1 #it maximizes so you have to do negative root mean squared
-              , nrounds = lightgbm_cv_pruned_subset$best_iter
-            )
-          )
-        })
-
-        return(
-          list( 
-            Score = -999999 #it maximizes so you have to do negative root mean squared
-            , nrounds = -999999
-          )
-        )
-      }
-      
-      num_features <- as.integer(length(variable_shape_order))
-      feature_range <- 1:num_features
-      condition <- runif(n=length(feature_range)) > (feature_range/num_features)^(1/3)
-      feature_range_surviving <- feature_range[condition]
-
+      clusterExport(cl,c('cv_folds_list','x_train','yid_train','variable_shape_order'))
       clusterEvalQ(cl,expr= {
         library(lightgbm)
         library(tidyverse)
       })
-      clusterExport(cl,c('cv_folds_list','x_train','yid_train','variable_shape_order','scoringFunction'))
-
-      library(pbapply)
-      results <- pblapply(feature_range_surviving, FUN = function(x){ scoringFunction(features_to_keep=x) } , cl=cl)
-      optObj <- bind_rows(results)
-      optObj$features_to_keep=feature_range_surviving
-      p <- optObj%>% ggplot(aes(x=features_to_keep, y=Score)) + geom_line() 
-      print(p)
       
-      # bounds <- list( 
-      #   #max_depth = c(-1L, 100L) #If you put L it understands integers
-      #   #, min_data_in_leaf = c(0, 100)
-      #   #, subsample = c(0.25, 1)
-      #   #, num_leaves= c(2L,255L)
-      #    features_to_keep=c(2L, as.integer(length(variable_shape_order)))
-      #   #, bagging_fraction = c(.5,1)
-      #   #, feature_fraction = c(.3, 1)
-      #   #,learning_rate=c(0.1,0.2) #
-      # )
-      # 
-      # if(length(variable_shape_order)>=12){
-      #   #dart is crazy slow. even if it was good we can't sustain it
-      #   print("Start optimizing")
-      #   optObj <- NULL
-      #   tic()
-      #     library(ParBayesianOptimization)
-      #     set.seed(1234)
-      #     optObj <- bayesOpt(
-      #       FUN = scoringFunction
-      #       , acqThresh= 1 #0.7 #lowering the acq threshold lead to fewer conflicts and it's trying more things
-      #       , bounds = bounds
-      #       , iters.k = 4
-      #       , initPoints = min(ceiling(length(variable_shape_order)/4), 100) #if you sample more than 100 it throws an error
-      #       , iters.n = 400 #I think we can get away with just 30 #it only needs to be 10 bc we're running 4 threads
-      #       , plotProgress = F
-      #       , verbose=0
-      #       , parallel = TRUE
-      #       , otherHalting = list(timeLimit = 120)
-      #     )
-      #   toc() #That's another 3 minutes
-      #   
-      #   #optObj$scoreSummary
-      #   #Running initial scoring function 10 times in 1 thread(s)...  415.054 seconds
-      #   #View(optObj$scoreSummary )
-      #   optObj$scoreSummary %>% 
-      #     mutate(ablation=ablation) %>%
-      #     mutate(test_fold=fold) %>%
-      #     mutate_if(is.logical, as.numeric) %>%
-      #     mutate_if(is.integer, as.numeric) %>%
-      #     arrow::write_parquet(glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results/tuning/scoreSummary_ablation{ablation}_fold{fold}.parquet"), version="2.0") #2.0 did not fix it, now trying
-      # 
-      #   optObj_best <- optObj$scoreSummary %>% janitor::clean_names() %>% arrange(score %>% desc()) %>% head(1)
-      # } else {
-      #   optObj_best <- data.frame(features_to_keep=length(variable_shape_order), nrounds=100)
-      # }
+      scoringFunction <- function(max_depth=-1L,  num_leaves=2, bagging_fraction=1, feature_fraction=1, features_to_keep) { #min_data_in_leaf learning_rate
+        
+        dtrain_pruned_subset=lgb.Dataset( x_train[,variable_shape_order[1:features_to_keep]]  %>% Rfast::data.frame.to_matrix(col.names=T) , #it's throwing an error about string size, i'm going to withhold feature names just incase that's the reason
+                                   label=yid_train[,'y_share18plus']  %>% Rfast::data.frame.to_matrix(col.names=T), feature_pre_filter=T, max_bin=255) #I can up it to 255 now
+        
+        lightgbm_cv_pruned_subset <- lgb.cv(
+          params = list(
+            boosting="gbdt", #dart #gbdt
+            objective = "regression", 
+            metric = "rmse",
+            learning_rate=0.1, #learning_rate,#, #default 0.1
+            num_leaves=num_leaves %>% round(),
+            #" with `feature_pre_filter=true` may cause unexpected behaviour for features that were pre-filtered by the larger "
+            #min_data_in_leaf=min_data_in_leaf %>% round(), #we set this in feature_pre filter
+            max_depth=max_depth %>% round()#,
+            #bagging_fraction=bagging_fraction,
+            #feature_fraction = feature_fraction
+          ),
+          folds = cv_folds_list,
+          data =dtrain_pruned_subset ,
+          early_stopping_rounds=10,
+          num_threads=21, #going to lower this to 21 from 32 and see if we can't parallel 3 of them
+          force_col_wise=T,
+          nrounds=1000,
+          #return_cvbooster=T,
+          verbose=0
+        )
+        
+        return(
+          list( 
+            Score = lightgbm_cv_pruned_subset$best_score*-1 #it maximizes so you have to do negative root mean squared
+            , nrounds = lightgbm_cv_pruned_subset$best_iter
+          )
+        )
+      }
       
+      #Going to sample feature numbers
+      feature_range <- 2:as.integer(length(variable_shape_order))
+      tic()
+        lapply(feature_range, FUN=function(x){ scoringFunction(features_to_keep=x) %>% as.data.frame } ) %>% bind_rows()
+      toc()
+      scoringFunction(features_to_keep=200)
+      
+      bounds <- list( 
+        #max_depth = c(-1L, 100L) #If you put L it understands integers
+        #, min_data_in_leaf = c(0, 100)
+        #, subsample = c(0.25, 1)
+        #, num_leaves= c(2L,255L)
+         features_to_keep=c(2L, as.integer(length(variable_shape_order)))
+        #, bagging_fraction = c(.5,1)
+        #, feature_fraction = c(.3, 1)
+        #,learning_rate=c(0.1,0.2) #
+      )
+      
+      if(length(variable_shape_order)>=12){
+        #dart is crazy slow. even if it was good we can't sustain it
+        print("Start optimizing")
+        optObj <- NULL
+        tic()
+          library(ParBayesianOptimization)
+          set.seed(1234)
+          optObj <- bayesOpt(
+            FUN = scoringFunction
+            , acqThresh= 1 #0.7 #lowering the acq threshold lead to fewer conflicts and it's trying more things
+            , bounds = bounds
+            , iters.k = 4
+            , initPoints = min(ceiling(length(variable_shape_order)/4), 100) #if you sample more than 100 it throws an error
+            , iters.n = 400 #I think we can get away with just 30 #it only needs to be 10 bc we're running 4 threads
+            , plotProgress = F
+            , verbose=0
+            , parallel = TRUE
+            , otherHalting = list(timeLimit = 120)
+          )
+        toc() #That's another 3 minutes
+        optObj$scoreSummary %>% ggplot(aes(x=features_to_keep, y=Score)) + geom_line() %>% print()
+        #optObj$scoreSummary
+        #Running initial scoring function 10 times in 1 thread(s)...  415.054 seconds
+        #View(optObj$scoreSummary )
+        optObj$scoreSummary %>% 
+          mutate(ablation=ablation) %>%
+          mutate(test_fold=fold) %>%
+          mutate_if(is.logical, as.numeric) %>%
+          mutate_if(is.integer, as.numeric) %>%
+          arrow::write_parquet(glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results/tuning/scoreSummary_ablation{ablation}_fold{fold}.parquet"), version="2.0") #2.0 did not fix it, now trying
+    
+        optObj_best <- optObj$scoreSummary %>% janitor::clean_names() %>% arrange(score %>% desc()) %>% head(1)
+      } else {
+        optObj_best <- data.frame(features_to_keep=length(variable_shape_order), nrounds=100)
+      }
       #Final fit, to all of the data, with our final subset of features, and final paramaters
-      optObj_best <- optObj %>% janitor::clean_names() %>% arrange(score %>% desc()) %>% head(1)
       vars_final=variable_shape_order[1:optObj_best$features_to_keep]
       dtrain_pruned_subset=lgb.Dataset( x_train[,vars_final]  %>% Rfast::data.frame.to_matrix(col.names=T) , #it's throwing an error about string size, i'm going to withhold feature names just incase that's the reason
                                         label=yid_train[,'y_share18plus']  %>% Rfast::data.frame.to_matrix(col.names=T), feature_pre_filter=T, max_bin=255) #I can up it to 255 now
@@ -454,13 +445,13 @@ registerDoParallel(cl)
     #After each var, fire off a script to knit the results so you can look at them while it goes
     #command <- "Rscript -e 'library(rmarkdown); rmarkdown::render(\"/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/Douglass_et_al_2021_WhatExplainsVaccinationRates_SummarizeResults.Rmd\", \"html_document\")'"
     #system(command, wait = F, ignore.stdout = T, show.output.on.console =F)
-
+    stopCluster(cl)
+    registerDoSEQ()
     
   }
   
 
-  stopCluster(cl)
-  registerDoSEQ()
+
 
 
 
