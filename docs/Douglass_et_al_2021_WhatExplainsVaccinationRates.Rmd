@@ -1,10 +1,14 @@
 ---
-title: "What explains U.S. Covid-19 Vaccination Rates? A Machine Learning Workflow for Ecological Inference"
-output:  
+title: What explains U.S. Covid-19 Vaccination Rates? A Machine Learning Workflow
+  for Ecological Inference
+output:
+  html_document:
+    df_print: paged
+    toc: yes
   html_notebook:
-    toc: true
-    toc_float: true
-    number_sections: true
+    number_sections: yes
+    toc: yes
+    toc_float: yes
 bibliography: WhatExplainsUSCovid19VaccinationRates.bib
 ---
 
@@ -25,6 +29,7 @@ p_load(data.table)
 p_load(sf)
 p_load(glue)
 p_load(scales)
+p_load(arrow)
 options(tigris_use_cache = TRUE)
 ```
 
@@ -95,7 +100,7 @@ ggsave(filename="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs
 #We can bring variables created later into the process up here for referencing in the text
 ```
 
-What explains variation in COVID-19 vaccination uptake across U.S. counties? By mid-2021, only 60% of Americans have been partially vaccinated against COVID-19. Vaccination uptake varies widely between counties (percentiles 10th=`r label_percent()(lhs_people_partial_10)`; 25th=`r label_percent()(lhs_people_partial_25)`; 50th=`r label_percent()(lhs_people_partial_50)`; 75th=`r label_percent()(lhs_people_partial_75)`; 90th=`r label_percent()(lhs_people_partial_90)`; entropy=`r lhs_people_partial_entropy_bits %>% round(2)` bits), and within and between states (Figure 1). Currently, there is a surplus of over 60 million vaccine doses that have been delivered but not yet administered [@cdcCOVIDDataTracker2020]. As of this writing, there have been at least 600 thousand COVID-19 deaths, cases are increasing again nationally, and forecast models expect thousands deaths in the coming weeks [@cdcCoronavirusDisease20192020]. Every percent increase in vaccine uptake has the potential to prevent thousands of deaths, tens of thousands of hospitalizations, and hundreds of thousands of infections [@bartschLivesCostsSaved2021]. Understanding the mismatch between available vaccine doses and unvaccinated communities is therefore an immediate health and welfare priority.
+What explains variation in COVID-19 vaccination uptake across U.S. counties? By mid-2021, only 60% of Americans have been partially vaccinated against COVID-19. Vaccination uptake varies widely between counties (percentiles 10th=`r scales::label_percent()(lhs_people_partial_10)`; 25th=`r scales::label_percent()(lhs_people_partial_25)`; 50th=`r scales::label_percent()(lhs_people_partial_50)`; 75th=`r scales::label_percent()(lhs_people_partial_75)`; 90th=`r scales::label_percent()(lhs_people_partial_90)`; entropy=`r lhs_people_partial_entropy_bits %>% round(2)` bits), and within and between states (Figure 1). Currently, there is a surplus of over 60 million vaccine doses that have been delivered but not yet administered [@cdcCOVIDDataTracker2020]. As of this writing, there have been at least 600 thousand COVID-19 deaths, cases are increasing again nationally, and forecast models expect thousands deaths in the coming weeks [@cdcCoronavirusDisease20192020]. Every percent increase in vaccine uptake has the potential to prevent thousands of deaths, tens of thousands of hospitalizations, and hundreds of thousands of infections [@bartschLivesCostsSaved2021]. Understanding the mismatch between available vaccine doses and unvaccinated communities is therefore an immediate health and welfare priority.
 
 ```{r figure1, echo=FALSE, fig.cap="A caption", out.width = '100%', results='asis'}
 

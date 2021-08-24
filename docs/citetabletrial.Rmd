@@ -1,0 +1,63 @@
+---
+title: What explains U.S. Covid-19 Vaccination Rates? A Machine Learning Workflow
+  for Ecological Inference
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+bibliography: WhatExplainsUSCovid19VaccinationRates.bib
+---
+
+
+```{r}
+fromscratch=F
+
+knitr::opts_chunk$set(fig.width = 8, fig.height = 8, message=F, warning=F, echo=F, results=F)
+
+#Library Loads
+library(pacman)
+p_load(tidyverse)
+p_load(janitor)
+p_load(tidylog)
+p_load(stringr)
+p_load(ggdag)
+p_load(data.table)
+p_load(sf)
+p_load(glue)
+p_load(scales)
+p_load(arrow)
+options(tigris_use_cache = TRUE)
+```
+
+
+
+# Current State of the Art
+
+We organize the research on vaccine uptake along the following lines. In this section we summarize only the most proximate literature on explaining COVID-19 vaccine uptake across U.S. geographic units, listed in Table 1. In the next section discussing our outcome, we review relevant measurement projects attempting to record uptake accurately. Finally in the section theorizing possible data generating processes for vaccine uptake we summarize the extensive literature on vaccine hesitancy, vaccine supply, previous vaccnie campaigns, etc. 
+
+```{r}
+
+p_load(googlesheets4)
+lit_review <- googlesheets4::read_sheet("https://docs.google.com/spreadsheets/d/1XGVatAyKU_oJyIW_JAuXsxw__gSm6g7ZLNfXQfqAfbE/edit?usp=sharing")
+
+```
+
+```{r, results="asis"}
+
+#Tom, or whoever, asis and or format='markdown' used to work for just putting cites directly in a tbale. I don't know why it doesn't work anymore, current theory is rnotebook doesn't like it and maybe bookdown or something else will
+lit_review %>% kableExtra::kable(format = "markdown")
+#require(huxtable)
+#lit_review %>% as_hux %>%
+#    set_caption("Hux table") 
+
+```
+
+The state of the art for explaining COVID-19 vaccine uptake across geographic units in the U.S. is poorly defined and incomplete. There is no accepted standard benchmark for comparing performance of competing explanations, each study picks their own subset of untis, time cut off, and data source on an ad hoc basis. With the exception of a very small literature attempting to forecast vaccine rates, this work is largely exploratory, focusing on whether a simple model places non-zero weight on a feature and reporting only in sample performance or ignoring performance all together. 
+
+Forecasting work projects known uptake rates some number of weeks into the future [@chernyavskiyCOVID19VaccineUptake2021]. They focus on a different question, what explains change in vaccine uptake over time, and so predict future values conditional not just on features but also past known values, whereas we seek to understand what previous features prior to the start why the entire vaccine roll out was more successful in some parts of the country than others.
+
+[@mishraCOVID19VaccineCoverage2021], predicts county level vaccine uptake using CDC data, with a multi-level linear model, fit to a hand engineered ranking indexes of 28 county measures organized into 5 themes (historic under-vaccination, sociodemographic barriers, resource-constrained healthcare system, healthcare accessibility barriers, and irregular care-seeking behavior). Their best performing model has an marginal $R^2$ of only 0.17, which while not directly comparable does illustrate the low starting baseline for accounting for uptake variation in the existing literature. [@stewartInequitiesVulnerableCommunities2021] fit multilevel models of uptake measured by COVIDcast weighted and find nonzero weights placed on COVID-19 Community Vulnerability Index but do not report performance.
