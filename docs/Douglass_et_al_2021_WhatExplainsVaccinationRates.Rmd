@@ -26,6 +26,63 @@ p_load(sf)
 p_load(glue)
 p_load(scales)
 options(tigris_use_cache = TRUE)
+
+
+library(tidyverse)
+
+restartspark <- function(){
+  #devtools::install_github("rstudio/sparklyr")
+  #devtools::install_github("rstudio/sparklyr")
+  #install.packages('sparklyr') #rolling back to the stable version
+  library(sparklyr)
+  #spark_available_versions()
+  #spark_installed_versions()
+  #spark_uninstall(version="3.0.1", hadoop_version="3.2")
+  #spark_uninstall(version="2.4.3", hadoop_version="2.7")
+  #oh interesting the default is spark 2.4.3 I wonder why that is
+  #Error: Java 11 is only supported for Spark 3.0.0+
+  #spark_install("3.0") #3.1.1 is currently the latest stable, but 3.0 is the latest available
+  
+  #library(geospark)
+  #library(arrow)
+  mem="160G"
+  try({spark_disconnect(sc)})
+  conf <- spark_config()
+  #conf$`sparklyr.cores.local` <- 128
+  #https://datasystemslab.github.io/GeoSpark/api/sql/GeoSparkSQL-Parameter/
+  conf$spark.serializer <- "org.apache.spark.serializer.KryoSerializer"
+  #conf$spark.kryo.registrator <- "org.datasyslab.geospark.serde.GeoSparkKryoRegistrator"
+  #conf$spark.kryoserializer.buffer.max <- "2047MB" #Caused by: java.lang.IllegalArgumentException: spark.kryoserializer.buffer.max must be less than 2048 mb, got: + 10240 mb.
+  #https://github.com/DataSystemsLab/GeoSpark/issues/217
+  #conf$geospark.global.index <- "true"
+  #conf$geospark.global.indextype <- "quadtree"
+  #conf$geospark.join.gridtype <- "kdbtree"
+  #conf$spark.sql.shuffle.partitions <- 1999 #https://github.com/DataSystemsLab/GeoSpark/issues/361 #setting to just under 2k so compression doesn't kick in, don't need to lower the memory footprint
+  conf$spark.driver.maxResultSize <- "100G"
+  conf$spark.memory.fraction <- 0.9
+  conf$spark.storage.blockManagerSlaveTimeoutMs <-"6000000s" #Failed during initialize_connection: java.lang.IllegalArgumentException: requirement failed: spark.executor.heartbeatInterval should be less than or equal to spark.storage.blockManagerSlaveTimeoutMs
+  conf$spark.executor.heartbeatInterval <-"6000000s"# "10000000s"
+  conf$spark.network.timeout <- "6000001s"
+  conf$spark.local.dir <- "/mnt/8tb_b/spark_temp/"
+  conf$spark.worker.cleanup.enabled <- "true"
+  conf$"sparklyr.shell.driver-memory"= mem
+  conf$'spark.driver.maxResultSize' <- 0 #0 is ulimmited
+  
+  conf$'spark.sql.legacy.parquet.datetimeRebaseModeInRead' <- 'LEGACY'
+  conf$'spark.sql.legacy.parquet.datetimeRebaseModeInWrite' <- 'LEGACY'
+  
+  conf$'spark.sql.execution.arrow.maxRecordsPerBatch' <- "5000000" #https://github.com/arctern-io/arctern/issues/399
+  
+  #Error: org.apache.spark.sql.AnalysisException: The pivot column variable_clean has more than 10000 distinct values, this could indicate an error. If this was intended, set spark.sql.pivotMaxValues to at least the number of distinct values of the pivot column.;
+  conf$'spark.sql.pivotMaxValues' <- "5000000"
+  
+  sc <<- spark_connect(master = "local", config = conf#,
+                       #version = "2.3.3" #for geospark
+  ) 
+}
+
+restartspark()
+
 ```
 
 
@@ -166,7 +223,7 @@ One challenge is that our data are a one-time collection, we cannot inductively 
 
 A second challenge is that our data are not independent and identically distributed (IID) draws from the same DGP, which reduces the amount of unique information available and makes selection of splits difficult [@robertsCrossvalidationStrategiesData2017]. Our county observations are administratively correlated at the state level at a minimum through vaccine distribution strategies and data reporting mechanisms. Our county observations are at a minimum spatially correlated through transportation logistics, flow of vaccine seekers from one county to another, and reporting error assigning some vaccinations to the location it was administered and not the home address of the person. Training on a county and then testing on its immediate neighbor may end up memorizing local geographic patterns rather than the actual role of features.
 
-Our train, validation, and test strategy is based on consensus features within nested cross-validation [@parvandehConsensusFeaturesNested2020]. We split our county data along state lines into 6 large geographically contiguous regions shown in Figure 1. We choose regions by hierarchically clustering states based on total human interstate travel between each pair of states in 2019 measured by cell phone locations collected by SafeGraph [@kangMultiscaleDynamicHuman2020]. An outer loop withholds a region as a test set which is only used for making out of sample predictions, never training. An inner loop fits a model 5 times in 5 folds cross-validation, each iteration training on 4 regions and predicting on 1 validation region. This cross-validation step allows us to choose model hyper-parameters, most important of which is which features to include in the final model.
+Our train, validation, and test strategy is based on consensus features within nested cross-validation [@parvandehConsensusFeaturesNested2020]. We split our county data along state lines into 5 large geographically contiguous regions shown in Figure 1. We choose regions by hierarchically clustering states based on total human interstate travel between each pair of states in 2019 measured by cell phone locations collected by SafeGraph [@kangMultiscaleDynamicHuman2020].^[We hierarchically cluster interstate trips using Ward's distance, and cut the dendrogram at 6 clusters. New England presents as a unique cluster but has only 45 counties and so we collapse it the North East folds resulting in 5 total.] An outer loop withholds a region as a test set which is only used for making out of sample predictions, never training. An inner loop fits a model 4 times in 4 folds cross-validation, each iteration training on 3 regions and predicting on 1 validation region. This cross-validation step allows us to choose model hyper-parameters, most important of which is which features to include in the final model.
 
 
 
@@ -177,7 +234,7 @@ states_sf_tigris_continental <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSup
 p_test_folds <- states_sf_tigris_continental  %>%
   ggplot(aes(fill = fold  )) +
   geom_sf() + 
-  ggtitle("6 Test Fold Splits") #+ xlim(c(NA,-50)) + ylim(c(20,50))
+  ggtitle("5 Test Fold Splits") #+ xlim(c(NA,-50)) + ylim(c(20,50))
 #p_test_folds
 
 ggsave(filename="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_test_folds.pdf", plot = p_test_folds , height=8, width=16)
@@ -194,9 +251,9 @@ p_test_folds
 
 ```
 
-Our feature selection strategy proceeds in three steps. First, our modelling technology is gradient boosted trees (GTB) which is a greedy algorithm that iteratively includes features until a condition is met. This immediately prunes most features that are never selected in any of the folds. Second, we subset to consensus features that are chosen in at least 3 of the 5 CV folds further reducing to just features that found broad geographic support. Our final step is to drop features which do not improve out of sample CV performance. Directly checking the performance of every subset is intractable ($k!$ many possible subsets), and so we rank order features by suspected importance and test the $k$ number of cumulative sets. Our measure of importance is the LossSHAP value which is the change in residuals on the hold out validation set when we subtract off the marginal contribution of each feature [@lundbergLocalExplanationsGlobal2020]. This criteria is most directly relevant to the outcome we care about, performance on unseen out of sample data, and allows for the possibility of negative importance where a feature leads to over-fitting and doesn't generalize.
+Our feature selection strategy proceeds in three steps. First, our modelling technology is gradient boosted trees (GTB) which is a greedy algorithm that iteratively includes features until a condition is met. This immediately prunes most features that are never selected in any of the folds. Second, we subset to consensus features that are chosen in at least 2 of the 4 CV folds further reducing to just features that found broad geographic support. Our final step is to drop features which do not improve out of sample CV performance. Directly checking the performance of every subset is intractable ($k!$ many possible subsets), and so we rank order features by suspected importance and test the $k$ number of cumulative sets. Our measure of importance is the LossSHAP value which is the change in residuals on the hold out validation set when we subtract off the marginal contribution (SHAP value) of each feature [@lundbergLocalExplanationsGlobal2020]. This criteria is most directly relevant to the outcome we care about, performance on unseen out of sample data, and allows for the possibility of negative importance where a feature leads to over-fitting and doesn't generalize.
 
-We then finalize our feature and hyper parameter selection, fit a single model to the full data of all 5 training folds, and make a single out of sample prediction on the remaining test fold. By doing this full procedure separately for each of the 6 folds, we produce full out of bag predictions for every county in the U.S. The results can be directly interpreted as the amount of out of sample performance in predicting vaccine uptake that can be purchased with a given set of features and fixed regularization budget. How useful a feature is can be interpreted directly in terms of how much unique performance it buys, and its role in the DGP can be interrogated via the functional form chosen across all of the individual models.
+We then finalize our feature and hyper parameter selection, fit a single model to the full data of all 4 training folds, and make a single out of sample prediction on the remaining 1 test fold. By doing this full procedure separately for each of the 5 folds, we produce full out of bag predictions for every county in the U.S. The results can be directly interpreted as the amount of out of sample performance in predicting vaccine uptake that can be purchased with a given set of features and fixed regularization budget. How useful a feature is can be interpreted directly in terms of how much unique performance it buys, and its role in the DGP can be interrogated via the functional form chosen across all of the individual models.
 
 
 ```{r algorithm1, echo=F, tidy=FALSE, eval=FALSE, highlight=FALSE }
@@ -219,7 +276,7 @@ procedure ConsensusFeaturesCV( Y, X, folds)
 
 ## Identification Strategy, Placebo Comparisons, and Feature Evaluation
 
-Our research design is purely observational, we make no claim to exogeneity, nor do we believe that even our large number of features 'control' for relevant confounding. Instead, our strategy is an information theoretic one, to propose and rigorously evaluate compact representations that potentially generalize to more draws from the same data generating process. We supplement this with placebo analysis to determine to what degree a representation is uniquely good for our outcome of vaccine uptake relative to other similar but unrelated outcomes [@eggersPlaceboTestsCausal2021]. We therefore consider a feature 'important' if it meets the following criteria (1) it greatly improves the ability to predict the outcome in out of sample observations (2) that improvement is unique to that feature, and cannot be easily reconstruct through other features that do not share the same theoretical interpretation, and (3) that improvement is unique to our outcome. Features that meet all three criteria suggest further research using either more appropriate individual level data or an experimental design with plausible causal identification. Features that do not may still be part of the true data generating processes, but were not distinguished in the crude data available here.
+Our research design is purely observational, we make no claim to exogeneity, nor do we believe that even our large number of features 'control' for relevant confounding. Instead, our strategy is an information theoretic one, to propose and rigorously evaluate compact representations that potentially generalize to more draws from the same data generating process. We supplement this with placebo analysis to determine to what degree a representation is uniquely good for our outcome of vaccine uptake relative to other similar but unrelated outcomes [@eggersPlaceboTestsCausal2021]. We therefore consider a feature 'important' if it meets the following criteria (1) it greatly improves the ability to predict the outcome in out of sample observations (2) that improvement is unique to that feature, and cannot be easily reconstruct through other features that do not share the same theoretical interpretation, and (3) that improvement is unique to our outcome. Features that meet all three criteria suggest further research using either more appropriate individual level data or an experimental design with plausible causal identification. Features that do not may still be part of the true data generating processes, but were not distinguished in the county level data available here.
 
 # Potential Data Generating Processes of Vaccine Uptake
 
@@ -234,20 +291,40 @@ COVID-19 vaccinations began in the U.S. on December 14, 2020 [@affairsaspaCOVID1
 library(huxtable)
 library(tidyverse)
 
-x_all <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train.Rds")
-rhs_codebook_total_coded$variable_clean <- rhs_codebook_total_coded$variable %>% janitor::make_clean_names() 
-setdiff(rhs_codebook_total_coded$variable_clean, colnames(x_all)) %>% length()
-setdiff(colnames(x_all), rhs_codebook_total_coded$variable_clean ) %>% length()
 
+#install.packages("huxtable")
+library(stringi)
 rhs_codebook_total_coded <- read.csv(file="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/rhs_codebook_total_coded.csv") %>% 
-                             janitor::clean_names() %>% 
-                             mutate(variable_clean = variable %>% janitor::make_clean_names() ) %>%
-                             filter(variable_clean %in% colnames(x_all)) %>%
-                             dplyr::select(-variable_short, -variable_short_group, -description_stemmed)
-dim(rhs_codebook_total_coded)
-colSums(rhs_codebook_total_coded[,-1], na.rm=T) %>% sort()
+  janitor::clean_names() %>% #for these columns
+  mutate(variable_clean = variable %>% janitor::make_clean_names()  ) 
 
-table(rhs_codebook_total_coded$dataset)
+rhs_codebook_total_coded <- rhs_codebook_total_coded %>% 
+  dplyr::select(-variable_short, -variable_short_group, -dataset,-description_stemmed) %>%
+  ####
+  filter(!warning_dv %in% 1) #We're excluding warning DV from this
+
+dim(rhs_codebook_total_coded)
+rhs_codebook_total_coded %>% dplyr::select(-variable, -variable_clean) %>% colSums(na.rm=T) %>% sort()
+variable_groups <- rhs_codebook_total_coded %>% dplyr::select(-variable, -variable_clean) %>% colSums(na.rm=T) %>% sort() %>% names()
+variable_groups <- variable_groups[!variable_groups %in% c("warning_dv","va_vaccinations")] #va vvaccinations isn't in xtable right onw and that's fine
+
+x_all <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train.Rds")
+x_all_variables <- data.frame(variables=colnames(x_all))
+rhs_codebook_total_coded <- rhs_codebook_total_coded %>% filter(variable_clean %in% colnames(x_all)) #there's two random x and x_2 from the google sheet
+
+
+x_all[!is.finite(x_all_255)] <- NA
+x_all_255 <- x_all
+not_missingness <- colSums( !is.na(x_all_255) ) # / nrow(rhs_combined_wide)
+nonzero <- colSums( x_all_255>0 , na.rm = T)
+both <- colSums( !is.na(x_all_255) & x_all_255>0  , na.rm = T)
+table(not_missingness<500) #there are 6k that have fewer than 500 obs
+table(nonzero<500) #there are 6k that have fewer than 500 obs
+
+table(not_missingness>500 & nonzero>500)
+x_all_255 <- x_all_255[,not_missingness>500 & nonzero>500]  #lightgbm requires both a certain amount of nonmissingness and a certain amount of variation. Kill any variable with less than 500 obs or less than 500 nonzero obs
+dim(x_all_255)
+rhs_codebook_total_coded <- rhs_codebook_total_coded %>% filter(variable_clean_255 %in% colnames(x_all_255))
 
 ```
 
@@ -344,6 +421,39 @@ features continue to be important at the subcounty neighborhood level [@leiHyper
 Download Options
 Covid-19 Vaccination Provider Locations in the United States
 
+# Results
+
+
+```{r}
+library(tidyverse)
+
+yid_test_include <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_include/performance/" ,memory=F) %>% collect() #include is broken
+yid_test_exclude <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude/performance/" ,memory=F) %>% collect()
+yid_test_cumulative <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude_cumulative/performance/" ,memory=F) %>% collect()
+
+performance_include <- yid_test_include %>% collect() %>% group_by(ablation) %>% summarize(rmse_include=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_include=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+performance_exclude <- yid_test_exclude %>% collect() %>% group_by(ablation) %>% summarize(rmse_exclude=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_exclude=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+performance_exclude_cumulative <- yid_test_cumulative %>% collect() %>% group_by(ablation) %>% summarize(rmse_exclude_cumulative=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_exclude_cumulative=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+
+results <- performance_include %>% mutate(ablation=ablation %>% str_replace("keep_","")) %>%
+  full_join(performance_exclude %>% 
+              mutate(ablation=ablation %>% str_replace("keep_","")) ) %>% 
+  full_join(performance_exclude_cumulative %>%
+              mutate(ablation=ablation %>% str_replace("exclude_","") ) ) %>% 
+              arrange(rmse_exclude %>% desc() ) %>% 
+              mutate(baseline=ifelse(ablation=="exclude_nothing", rmse_exclude, NA)) %>%
+              mutate(baseline=max(baseline, na.rm=T)) %>%
+              mutate(rmse_exclude_cumulative_percbasline= round( 1 - (rmse_exclude_cumulative/baseline) , 2) ) %>%
+              mutate(rmse_exclude_percbasline= round( 1 - rmse_exclude/baseline , 2 ) ) %>%
+              mutate(rmse_include_percbasline= round( 1 -  rmse_include/baseline, 2 ) )
+results %>% view()
+
+
+#install.packages("huxtable")
+library(huxtable)
+results_ht <- results %>% dplyr::select(ablation, rmse_include,rmse_include_percbasline, rmse_exclude,rmse_exclude_percbasline, rmse_exclude_cumulative, rmse_exclude_cumulative_percbasline ) %>% as_hux()
+
+```
 
 
 

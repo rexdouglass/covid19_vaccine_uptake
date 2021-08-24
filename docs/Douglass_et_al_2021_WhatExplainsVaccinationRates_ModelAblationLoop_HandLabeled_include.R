@@ -25,43 +25,38 @@ library(tidyverse)
 
 ########## Data Loads ---------------------------------------
 
-#install.packages("huxtable")
-library(stringi)
-rhs_codebook_total_coded <- read.csv(file="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/rhs_codebook_total_coded.csv") %>% 
-  janitor::clean_names() %>% #for these columns
-  mutate(variable_clean = variable %>% janitor::make_clean_names()  ) %>% #for these variable names
-  mutate(variable_clean_255 = abbreviate(variable_clean, 230, strict=T)  ) %>%
-  mutate(variable_clean_255_dupe = duplicated(variable_clean_255)) %>%
-  mutate(variable_clean_255 = ifelse(variable_clean_255_dupe, variable %>% abbreviate(200, strict=T) %>% paste0(row_number()) , variable_clean_255 )     ) %>%
-  #mutate( variable_clean_255 = stringi::stri_replace_all_fixed("[],{}":"),"")  ) %>%
-  #Further remove json characters
-  mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed("[","")  ) %>% #https://github.com/awslabs/autogluon/issues/399
-  mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed("]","")  ) %>% 
-  mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed(",","")  ) %>%
-  mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed("{","")  ) %>%
-  mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed("}","")  ) %>%
-  mutate( variable_clean_255 = variable_clean_255 %>%  stringi::stri_replace_all_fixed("\"","") )  %>%
-  mutate(variable_clean_255 = variable_clean_255 %>% janitor::make_clean_names()  )  #for these variable names
-  
-dim(rhs_codebook_total_coded)
-#We're also going to drop any acs1s that show up in acs5
-acs5_to_remove <- rhs_codebook_total_coded %>% filter(dataset %in% "acs5") %>% pull(description_stemmed) %>% unique()
-
-rhs_codebook_total_coded <- rhs_codebook_total_coded %>% 
-  filter(!(dataset %in% "acs1" & description_stemmed %in% acs5_to_remove)) %>%
-  dplyr::select(-variable_short, -variable_short_group, -dataset,-description_stemmed, -variable_clean_255_dupe) %>%
-  ####
-  filter(!warning_dv %in% 1) #We're excluding warning DV from this
-
-dim(rhs_codebook_total_coded)
-rhs_codebook_total_coded %>% dplyr::select(-variable, -variable_clean_255, -variable_clean) %>% colSums(na.rm=T) %>% sort()
-variable_groups <- rhs_codebook_total_coded %>% dplyr::select(-variable, -variable_clean_255, -variable_clean) %>% colSums(na.rm=T) %>% sort() %>% names()
-variable_groups <- variable_groups[!variable_groups %in% c("warning_dv","va_vaccinations")] #va vvaccinations isn't in xtable right onw and that's fine
-
 yid_all <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/yid_train.Rds")
 x_all <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train.Rds")
 
+dim(x_all)
+x_all[!is.finite(x_all)] <- NA
+not_missingness <- colSums( !is.na(x_all) ) # / nrow(rhs_combined_wide)
+nonzero <- colSums( x_all>0 , na.rm = T)
+both <- colSums( !is.na(x_all) & x_all>0  , na.rm = T)
+table(not_missingness<200) #there are 6k that have fewer than 500 obs
+table(nonzero<200) #there are 6k that have fewer than 500 obs
+table(both<200) #there are 6k that have fewer than 500 obs
+
+x_all <- x_all[,both>500]
+
+#install.packages("huxtable")
+library(stringi)
+rhs_codebook_total_coded <- arrow::open_dataset("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_codebook_spark/") %>% collect()
+
+rhs_codebook_total_coded <- rhs_codebook_total_coded %>% 
+                              filter(!category_warning_dv %in% 1) #We're excluding warning DV from this
+dim(rhs_codebook_total_coded)
+
+setdiff( colnames(x_all), rhs_codebook_total_coded$variable_clean_255)
+#setdiff(  rhs_codebook_total_coded$variable_clean_255, colnames(x_all)) #There are 1300 vars in the codebook that aren't in x_all. I believe that's because they were all NA and dropped
+rhs_codebook_total_coded <- rhs_codebook_total_coded %>% filter(variable_clean_255 %in% colnames(x_all))
+
+rhs_codebook_total_coded %>% dplyr::select(starts_with("category")) %>% colSums(na.rm=T) %>% sort()
+variable_groups <- rhs_codebook_total_coded %>% dplyr::select(starts_with("category")) %>% colSums(na.rm=T) %>% sort() %>% names()
+variable_groups <- variable_groups[!variable_groups %in% c("category_warning_dv","category_va_vaccinations")] #va vvaccinations isn't in xtable right onw and that's fine
+
 Folds1 <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/Folds1.Rds")
+length(unlist(Folds1))
 xy_all <- cbind(yid_all[,'y'],x_all) %>% as.data.frame()
 dim(xy_all)
 #x_all_scaled <- x_all %>% scale() 
@@ -72,33 +67,15 @@ summary(yid_all$y_share18plus)
 
 x_all_variables <- data.frame(variables=colnames(x_all))
 
-rhs_codebook_total_coded$variable_clean <- rhs_codebook_total_coded$variable %>% janitor::make_clean_names() #actually quite slow
-#setdiff(colnames(x_all), rhs_codebook_total_coded$variable_clean) #make sure all the names are n there
 
-rhs_codebook_total_coded <- rhs_codebook_total_coded %>% filter(variable_clean %in% colnames(x_all)) #there's two random x and x_2 from the google sheet
-#setdiff( rhs_codebook_total_coded$variable_clean, colnames(x_all))
-
-variable_clean_255 <- rhs_codebook_total_coded$variable_clean_255
-names(variable_clean_255) <-rhs_codebook_total_coded$variable_clean #wow this is that R bug where it'll silently do partial matching
-x_all_255 <- x_all[,rhs_codebook_total_coded$variable_clean, drop=F]
-colnames(x_all_255) <- variable_clean_255[colnames(x_all_255)]
-dim(x_all_255)
-
-dim(x_all_255)
-x_all[!is.finite(x_all_255)] <- NA
-not_missingness <- colSums( !is.na(x_all_255) ) # / nrow(rhs_combined_wide)
-nonzero <- colSums( x_all_255>0 , na.rm = T)
-both <- colSums( !is.na(x_all_255) & x_all_255>0  , na.rm = T)
-table(not_missingness<500) #there are 6k that have fewer than 500 obs
-table(nonzero<500) #there are 6k that have fewer than 500 obs
-
-missingness_df <- data.frame(variable=colnames(x_all_255),not_missingness=not_missingness,nonzero=nonzero, both=both) 
+missingness_df <- data.frame(variable=colnames(x_all),not_missingness=not_missingness,nonzero=nonzero, both=both) 
 
 #table(not_missingness<3050) #there are 6k that have fewer than 500 obs
 #colnames(x_all)[not_missingness<1000] #They're almost all peurto rico related
-x_all_255 <- x_all_255[,not_missingness>500 & nonzero>500]  #lightgbm requires both a certain amount of nonmissingness and a certain amount of variation. Kill any variable with less than 500 obs or less than 500 nonzero obs
+#x_all_varies <- x_all[,not_missingness>500 & nonzero>500]  #lightgbm requires both a certain amount of nonmissingness and a certain amount of variation. Kill any variable with less than 500 obs or less than 500 nonzero obs
+dim(x_all_varies)
 
-rhs_codebook_total_coded <- rhs_codebook_total_coded %>% filter(variable_clean_255 %in% colnames(x_all_255))
+#rhs_codebook_total_coded_varies <- rhs_codebook_total_coded %>% filter(variable_clean_255 %in% colnames(x_all_varies))
 
 #https://github.com/microsoft/LightGBM/issues/283
 get_lgbm_cv_preds <- function(cv){
@@ -119,13 +96,13 @@ registerDoParallel(cl)
   ########## Ablation Loop Include ---------------------------------------
   verbose=F
   eligible_variables <- rhs_codebook_total_coded$variable_clean_255
-  print(length(eligible_variables)) #15,815 removing the acs1 in acs5 gets us down to 15k
+  print(length(eligible_variables)) #24,265 
   for(group in variable_groups){
     #group="transportation"
     print(group)
     ablation=paste0("keep_",group)
     
-    condition <- rhs_codebook_total_coded[,group] %in% 1 #reversing it for exclude, that and the file path are the only two things I changed for this script
+    condition <- rhs_codebook_total_coded[,group] == T #reversing it for exclude, that and the file path are the only two things I changed for this script
     eligible_variables <- rhs_codebook_total_coded$variable_clean_255[condition]
     print(length(eligible_variables))
     print(eligible_variables %>% head(10))
@@ -139,15 +116,11 @@ registerDoParallel(cl)
       print(fold)
       print("Partition data")
       yid_train <- yid_all[yid_all$fold!=fold,]
-      names(eligible_variables) <- paste0("blah",1:length(eligible_variables))
-      x_train <- x_all_255[yid_all$fold!=fold,eligible_variables, drop=F]
-      temp <- x_train
-      colnames(x_train) <- paste0("blah",1:ncol(x_train)) #maybe it's the column names?
-      
+      setdiff(eligible_variables, colnames(x_all))
+      x_train <- x_all[yid_all$fold!=fold,eligible_variables, drop=F]
+
       yid_test <- yid_all[yid_all$fold==fold,]
-      x_test <- x_all_255[yid_all$fold==fold,eligible_variables, drop=F]
-      colnames(x_test) <- paste0("blah",1:ncol(x_test)) #maybe it's the column names?
-      
+      x_test <- x_all[yid_all$fold==fold,eligible_variables, drop=F]
       cv_folds_list=lapply(yid_train$fold%>% unique(), FUN=function(x) which(yid_train$fold==x))
       
       #yup that's the reason
@@ -158,7 +131,9 @@ registerDoParallel(cl)
       #saveRDS(x_train, "/home/skynet3/Downloads/x_train.Rds")
       #saveRDS(yid_train, "/home/skynet3/Downloads/yid_train.Rds")
       #saveRDS(cv_folds_list, "/home/skynet3/Downloads/cv_folds_list.Rds")
-      dtrain=lgb.Dataset( x_train %>% scale()  %>% Rfast::data.frame.to_matrix(col.names=F) , #it's throwing an error about string size, i'm going to withhold feature names just incase that's the reason
+      temp <- x_train
+      names(temp) <- paste0("blah",1:ncol(x_train))
+      dtrain=lgb.Dataset( temp %>% scale()  %>% Rfast::data.frame.to_matrix(col.names=F) , #it's throwing an error about string size, i'm going to withhold feature names just incase that's the reason
                           label=yid_train[,'y_share18plus']  %>% Rfast::data.frame.to_matrix(col.names=F), feature_pre_filter=T, max_bin=15) 
       #for gpu it says we can get away with 15 bins, smaller number of bins speeds up cpu too when lots of features
       

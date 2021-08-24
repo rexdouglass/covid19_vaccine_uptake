@@ -200,9 +200,14 @@ states_sf_tigris_continental <- states_sf_tigris_continental %>% arrange(STATEFP
                                 mutate(fold_4=cutree(hc, k=4)) %>%  
                                 mutate(fold_5=cutree(hc, k=5)) %>%
                                 mutate(fold_6=cutree(hc, k=6)) %>% #siz it is
-                                mutate(fold_8=cutree(hc, k=8)) %>%
-                                mutate(fold=fold_6 %>% as.factor())
+                                mutate(fold_8=cutree(hc, k=8)) #%>%
+                                #mutate(fold=fold_6 %>% as.factor())
 
+plot(states_sf_tigris_continental[,'fold_6'])
+states_sf_tigris_continental$fold_5_collapsed <- states_sf_tigris_continental$fold_6
+states_sf_tigris_continental$fold_5_collapsed[states_sf_tigris_continental$fold_6==6] <- 5
+states_sf_tigris_continental$fold <- states_sf_tigris_continental$fold_5_collapsed
+plot(states_sf_tigris_continental[,'fold_5_collapsed'])
 saveRDS(states_sf_tigris_continental, "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/states_sf_tigris_continental.Rds")
 
 ```
@@ -466,7 +471,7 @@ rhs_census2020 <- bind_rows(CC_EST2020_long_clean2,
                             mutate(variable=paste0("census2020_",description)) %>%
                             dplyr::select(fips, variable, description, dataset, value)
 
-rhs_census2020 %>% filter(fips==53025) %>% mutate(dupe=duplicated(variable)) %>% View()
+#rhs_census2020 %>% filter(fips==53025) %>% mutate(dupe=duplicated(variable)) %>% View()
 
 
 rhs_census2020_perc <- rhs_census2020 %>% 
@@ -671,7 +676,8 @@ vars2 <- temp_acs5_df_all$variable %>% unique()
 tables_acsboth <- rbind(temp_acs1_df_all,temp_acs5_df_all) %>% distinct() #1
 dim(tables_acsboth) #180,840,520        5  180 million
 
-vars_all <- bind_rows(vars_acs1, vars_acs5) %>% distinct() #35,702
+vars_all <- bind_rows(#vars_acs1,
+                      vars_acs5) %>% distinct() #35,702
 
 vars_all_clean <- vars_all %>% 
                   mutate(description = concept  %>% paste0(", ",  label %>% str_replace_all("Estimate!!","") %>% str_replace_all(":!!",", ") %>% str_replace_all(":","") %>% str_replace_all("!!","")   ) %>% str_to_sentence()  ) %>%
@@ -690,20 +696,31 @@ gc()
 
 acs_pop <- acs_raw %>% filter(description=="Sex by age, total") %>% distinct()
 rhs_acs_percent <- acs_raw  %>%
-                   filter(!description %>% str_detect("income|dollars|minutes|rooms|hours|value|structure|facilities")) %>%
+                   filter(!description %>% str_detect("income|dollars|minutes|rooms|hours|value|structure|facilities")) %>% #This is the costly bit
                    left_join(acs_pop %>% dplyr::select(fips, pop_acs=value) %>% distinct() ) %>%
                    mutate(value= value/pop_acs ) %>%
                    mutate(description=paste0("percent ", description)) %>%
                    mutate(variable=paste0(variable, "_perc")) %>%
                    filter(!is.na(value)) %>% 
                    filter(value<1) %>% #drop anything that equals 1
-                   dplyr::select(-pop_acs)
+                   dplyr::select(-pop_acs) 
 
-rhs_acs_48029 <- rhs_acs_onlypop %>% filter(fips==48029)
-rhs_acs_percent_48029 <- rhs_acs_percent %>% filter(fips==48029)
+#rhs_acs_48029 <- rhs_acs_onlypop %>% filter(fips==48029)
+#rhs_acs_percent_48029 <- rhs_acs_percent %>% filter(fips==48029)
 
-rhs_acs_percent  %>% rex_clean() %>% arrow::write_parquet(glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs/rhs_acs_percent.parquet"))
+#I don't know where but acs1 keeps sneaking in somewhere
+rhs_acs_percent  %>% filter(dataset!="acs1") %>% rex_clean() %>% arrow::write_parquet(glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs/rhs_acs_percent.parquet"))
 
+
+rhs_acs_ammounts <- acs_raw  %>%
+                   filter(description %>% str_detect("income|dollars|minutes|rooms|hours|value|structure|facilities")) %>% #This is the costly bit
+                   filter(!is.na(value)) 
+dim(rhs_acs_ammounts)
+
+rhs_acs_ammounts %>% filter(dataset!="acs1")  %>% rex_clean() %>% arrow::write_parquet(glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs/rhs_acs_ammounts.parquet"))
+
+#table(rhs_acs_ammounts$dataset)
+#table(rhs_acs_percent$dataset)
 
 #rhs_census_2020  <- arrow::read_parquet(glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs/rhs_census2020_actual.parquet"))
 #
@@ -2563,7 +2580,15 @@ rhs_long_population  <- arrow::read_parquet(glue::glue("/mnt/8tb_a/rwd_github_pr
                         filter(variable=="pop") %>% dplyr::select(fips,population=value) %>% mutate(fips=as.numeric(fips)) %>% distinct()
 
 
-rhs_long_counts <- rhs_long %>% dplyr::select(fips, variable, description, dataset, value) %>% filter(!variable %rlike% "_perc|percap|percapita*|per capita|percent") #%>% collect() 
+rhs_long_notcounts <- rhs_long %>% dplyr::select(fips, variable, description, dataset, value) %>% 
+                     filter(variable %rlike% "perc|percap|percapita*|per capita|percent" |
+                            description %rlike% "percap|percapita|per capita|percent") #%>% collect() 
+rhs_long_notcounts %>% spark_write_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_long_notcounts/", mode="overwrite") #
+rhs_long_notcounts <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_long_notcounts/" ,memory=F)
+
+rhs_long_counts <- rhs_long %>% dplyr::select(fips, variable, description, dataset, value) %>% 
+                   filter(!variable %rlike% "perc|percap|percapita*|per capita|percent" & 
+                          !description %rlike% "percap|percapita|per capita|percent") #%>% collect() 
 
 rhs_long_counts %>% spark_write_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_long_counts/", mode="overwrite") #
 rhs_long_counts <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_long_counts/" ,memory=F)
@@ -2575,52 +2600,101 @@ rhs_long_percap <- rhs_long_counts %>%
                    mutate(variable=paste0(variable,"_percapita"))  %>% 
                    mutate(description=paste0("per capita ", description)) 
 
-sdf_bind_rows(rhs_long,rhs_long_percap) %>% spark_write_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_combined/", mode="overwrite")
+sdf_bind_rows(rhs_long_notcounts,
+              rhs_long_percap %>% dplyr::select(-population)) %>% 
+              spark_write_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_combined/", mode="overwrite")
 
 #rhs_long_percap  %>% rex_clean() %>% arrow::write_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_combined/rhs_long_percap.parquet") #add the parquet to the pile 
 
 rhs_combined <- spark_read_parquet(sc,name='rhs_combined', path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_combined/" ,memory=F) 
 
-
 rhs_codebook <- rhs_combined %>% 
-                 dplyr::select(variable, variable_short, description, variable_short_group, dataset) %>% 
+                 dplyr::select(variable,  description,  dataset) %>% 
                  sdf_distinct() %>% #don't do regular distinct or it'll take crazy long
+                  mutate(category_sex = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "sex|male|women|men|female") %>%
+                  mutate(category_age = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "age|years_old|^vap_") %>%
+                  mutate(category_race = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "race|black|indian|hispanic|white|ancestry|asian|hawaiian|language|pop_aian|vap_hisp|vap_two|vap_other|vap_aian|pop_two_|pop_nhpi|pop_hisp|pop_other") %>%
+                  mutate(category_citizenship = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "citizenship|naturalization") %>%
+                  mutate(category_foreign_born = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "nativity|foreign|place_of_birth") %>%
+                  mutate(category_marriage = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "marital|spouse|widowed") %>%
+                  mutate(category_education = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "education|school|college|degree") %>%
+                  mutate(category_wealth_employment = dataset  %rlike%  "census_2020_actual|census2020|acs5" &  variable  %rlike%  "poverty|income|earnings|food_stamps|labor_force|employment|earner|owner_costs") %>%
+                  mutate(category_longer_term_mobility = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "geographical_mobility") %>%
+                  mutate(category_transportation = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "transportation") %>%
+                  mutate(category_occupation = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "work|ocupation|employment") %>%
+                  mutate(category_households = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "household|rooms|vacancy|allocation_of|allocation_rate|structure_built|units_in_structure") %>%
+                  mutate(category_amenities = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "vehicle|telephone|internet") %>%
+                  mutate(category_population = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "population|^pop_") %>%
+                  mutate(category_family_structure = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "children|adults|grandchildren|family type|birth") %>%
+                  mutate(category_disabilities = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "disability|hearing|vision|cognitive|ambulatory|difficulty|disabilities") %>%
+                  mutate(category_insurance = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "insurance|medicaid|va health care|tricare|uninsured") %>%
+                  mutate(category_military = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "veteran|civilian|military|tricare") %>%
+                  mutate(category_housing = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "housing|occupancy|tenure|mortgage|heating|rent|value|price|mortgage") %>%
+                  mutate(category_economy_employment = dataset  %rlike%  "bae|cew") %>%
+                  mutate(category_health_conditions = dataset  %rlike%  "countyhealthrankings"  & variable  %rlike% "obesity|smoking|birthweight|fair_health|low_birthweight|hospital_stays" ) %>%
+                  mutate(category_healthcare_services = dataset  %rlike%  "countyhealthrankings"  & variable  %rlike% "dentists|mammography|mental_health|physicians" ) %>%
+                  mutate(category_covid = dataset  %rlike%  "covid19projections" ) %>%
+                  mutate(category_google_mobility = dataset  %rlike%  "google" & description  %rlike% "mobility"  ) %>%
+                  mutate(category_vaccine_supply = dataset  %rlike%  "vaccinedotgov" | variable %rlike% "supply_vaccine|google_vaccine_facilities_count" ) %>%
+                  mutate(category_vaccine_demand =  variable %rlike% "countyhealthrankings_flu_vaccinations|percent_accept_vaccination" ) %>%
+                  mutate(category_voting = dataset  %rlike%  "MIT Election Data and Science Lab, 2018, County Presidential Election Returns 2000-2020") %>%
+                  mutate(category_masking = dataset  %rlike%  "NYT") %>%
+                  mutate(category_mobility_safegraph = dataset  %rlike%  "safegraph") %>%
+                  mutate(category_religion = dataset  %rlike%  "therda") %>%
+                  mutate(category_va_vaccinations = variable  %rlike%  "through_va") %>%
+                  mutate(category_warning_dv = variable  %rlike%  "WARNING|WARNING_DV_") %>%
+                  mutate(category_global_warming = dataset  %rlike%  "yale") %>%
                  collect() %>%
                  mutate(description = description %>% str_replace_all("_", " ") %>% str_replace_all("  ", " ") %>% trimws()) %>%
                  mutate(variable_clean = variable %>% janitor::make_clean_names()) %>%  #have to do on the R side
-                 mutate(variable_clean_dupe=duplicated(variable_clean)) #takes a while
+                 mutate(variable_clean_dupe=duplicated(variable_clean)) %>% #for these variable names
+                  mutate(variable_clean_255 = abbreviate(variable_clean, 230, strict=T)  ) %>%
+                  mutate(variable_clean_255_dupe = duplicated(variable_clean_255)) %>%
+                  mutate(variable_clean_255 = ifelse(variable_clean_255_dupe, variable %>% abbreviate(200, strict=T) %>% paste0(row_number()) , variable_clean_255 )     ) %>%
+                  #mutate( variable_clean_255 = stringi::stri_replace_all_fixed("[],{}":"),"")  ) %>%
+                  #Further remove json characters
+                  mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed("[","")  ) %>% #https://github.com/awslabs/autogluon/issues/399
+                  mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed("]","")  ) %>% 
+                  mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed(",","")  ) %>%
+                  mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed("{","")  ) %>%
+                  mutate( variable_clean_255 = variable_clean_255 %>% stringi::stri_replace_all_fixed("}","")  ) %>%
+                  mutate( variable_clean_255 = variable_clean_255 %>%  stringi::stri_replace_all_fixed("\"","") )  %>%
+                  mutate(variable_clean_255 = variable_clean_255 %>% janitor::make_clean_names()  )  #for these variable names
+
+rhs_codebook %>% dplyr::select(starts_with('category')) %>% colSums() %>% sort()
+rhs_codebook %>% dplyr::select(starts_with('category')) %>% rowSums() %>% table() #There are 106 with no labels
+
+temp <- rhs_codebook
+temp$rowsum <- rhs_codebook %>% dplyr::select(starts_with('category')) %>% rowSums()
+temp %>% filter(rowsum==0) %>% View()
+
 rhs_codebook_spark <- sdf_copy_to(sc,x=rhs_codebook,'rhs_codebook_spark',memory=T, overwrite = TRUE)
-
 rhs_codebook_spark  %>% spark_write_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_codebook_spark/", mode="overwrite")
-
 
 rhs_combined_long_dupes_48029 <- rhs_combined  %>% dplyr::select(fips, variable) %>% filter(fips==48029) %>%  collect()   %>% mutate(dupe=duplicated(paste0(fips,variable) ))
 
 rhs_combined <- spark_read_parquet(sc,name='rhs_combined', path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_combined/" ,memory=F) 
 rhs_codebook_spark <- spark_read_parquet(sc,name='rhs_codebook_spark', path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_codebook_spark/" ,memory=F) 
 
+#This just adds the variable clean and variable clean 255 to the long version as well as makes sure there's no dupes for when go to wide
 rhs_combined_long <- rhs_combined %>% dplyr::select(fips, variable,value)  %>%
-                      inner_join(rhs_codebook_spark %>% filter(!variable_clean_dupe) %>% dplyr::select(variable, variable_clean)) %>% #inner join restricts it to just things in the codebook
+                      inner_join(rhs_codebook_spark %>% filter(!variable_clean_dupe) %>% dplyr::select(variable, variable_clean, variable_clean_255)) %>% #inner join restricts it to just things in the codebook
                       dplyr::select(-variable) %>% #
                       mutate(fips=as.numeric(fips)) %>%
                       filter(!is.na(fips))  %>% 
-                      dplyr::select(fips,variable_clean,value) 
+                      dplyr::select(fips,variable_clean_255,value) 
                        #there are broken fips, track them down later
 rhs_combined_long  %>% spark_write_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_combined_long/", mode="overwrite")
 
 #Because spark choked on the long to wide, we pull it into R and do it there, bonus we easily saves as a single parquet
 
-rhs_combined_long <- spark_read_parquet(sc,name='rhs_combined_long', path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_combined_long/" ,memory=F) 
-rhs_combined_wide_temp_dupes <- rhs_combined_long %>% mutate(fips_variable=paste0(fips,"_", variable_clean)) %>% dplyr::select(fips_variable) %>% count(fips_variable) %>% filter(n>1) %>% collect()
-dim(rhs_combined_wide_temp_dupes) #should be zero
-testit::assert(nrow(rhs_combined_wide_temp_dupes)==0)
 
 rhs_combined_long <- arrow::open_dataset(sources="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_combined_long/")
-dim(rhs_combined_long)  
+dim(rhs_combined_long)  #72942165
 
 #I don't know why but this is taking too long.   
 rhs_combined_wide_temp <- rhs_combined_long %>%
-                      dplyr::select(fips,variable_clean,value) %>%
+                      dplyr::select(fips,variable_clean_255,value) %>%
                       collect() 
 dim(rhs_combined_wide_temp)
 
@@ -2628,11 +2702,11 @@ dim(rhs_combined_wide_temp)
 
 
 rhs_combined_wide <- rhs_combined_wide_temp %>%
-                      pivot_wider(names_from=variable_clean, values_from=value) 
+                      pivot_wider(names_from=variable_clean_255, values_from=value) 
                       #sdf_pivot(fips ~ variable_clean, #for whatever reason it is really bad at going long to wide
                       #  fun.aggregate = list(value = "mean")
                       #)
-dim(rhs_combined_wide) #5093 35,583 #sticking with only or nearly only percentages reduces the cols to 35k
+dim(rhs_combined_wide) #24270 #5093 35,583 #sticking with only or nearly only percentages reduces the cols to 35k
 rhs_combined_wide_variables <- data.frame(colnames(rhs_combined_wide))
 
 rhs_combined_wide   %>% arrow::write_parquet("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_wide/rhs_combined_wide.parquet") #add the parquet to the pile 
@@ -2652,11 +2726,12 @@ rhs_combined_wide <- arrow::read_parquet("/mnt/8tb_a/rwd_github_private/TrumpSup
 rhs_combined_wide_variables <- data.frame(variables=colnames(rhs_combined_wide))
 
 states_sf_tigris_continental <- readRDS( glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/states_sf_tigris_continental.Rds"))
-folds_df <- states_sf_tigris_continental %>% as.data.frame() %>% dplyr::select(fips_state=STATEFP, fold=fold_6) %>% mutate(fips_state=as.numeric(fips_state))
+folds_df <- states_sf_tigris_continental %>% as.data.frame() %>% dplyr::select(fips_state=STATEFP, fold=fold_5_collapsed) %>% mutate(fips_state=as.numeric(fips_state))
 
 y_all <- lhs  %>% left_join(folds_df) %>% dplyr::select(fold,  fips, y=people_partial_mean, y_share14plus=people_partial_mean_perc14plus, y_share18plus=people_partial_mean_perc18plus)%>% filter(!is.na(fold))
 x_all <- rhs_combined_wide %>% janitor::remove_constant() %>% clean_names() 
-dim(x_all) #4600 152511
+dim(x_all) #24,268 #4600 152511
+x_all %>% colnames() %>% str_detect("acs1") %>% table()
 #This now takes a surprisingly long time
 yx_all <- y_all %>%  mutate(fips=fips %>% as.numeric( ))  %>% filter(is.finite(y_share14plus)) %>%
           left_join(x_all %>% mutate(fips=fips %>% as.numeric() ) ) %>% janitor::remove_constant() %>% clean_names() #This cuts it down to just things that have obs in y
@@ -2697,7 +2772,7 @@ Folds1 <- list(
   , Fold3 = which(yx_all$fold==remaining_folds1[3])
   , Fold4 = which(yx_all$fold==remaining_folds1[4])
   , Fold5 = which(yx_all$fold==remaining_folds1[5])
-  , Fold6 = which(yx_all$fold==remaining_folds1[6])
+  #, Fold6 = which(yx_all$fold==remaining_folds1[6])
 )
       
 saveRDS(Folds1, "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/Folds1.Rds")
@@ -2762,7 +2837,7 @@ saveRDS(x_train_imputed, "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationR
 
 # Cluster Variables symantically here
 
-```{r}
+```{r, eval=F}
 
 rhs_codebook <- arrow::open_dataset(sources="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_codebook_spark/") %>% collect()
 
@@ -2788,7 +2863,7 @@ description_sentence_unique %>% length() #29076
 
 
 
-```{python}
+```{python, eval=F}
 
 
 #pip install -U sentence-transformers
@@ -2839,7 +2914,7 @@ sentence_embeddings.shape
 ```
 
 
-```{r}
+```{r, eval=F}
 
 #install.packages("fastcluster")
 library(fastcluster)
@@ -3043,7 +3118,7 @@ dim(dfmat_inaug_df)
 
 ```
 
-```{python}
+```{python, eval=F}
 
 from transformers import pipeline
 summarizer = pipeline("summarization")
