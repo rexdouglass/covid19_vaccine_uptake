@@ -11,10 +11,10 @@ bibliography: WhatExplainsUSCovid19VaccinationRates.bib
 ---
 
 ```{r, eval=T, echo=F}
-knitr::opts_chunk$set(fig.width = 8, fig.height = 8, message=F, warning=F, echo=F, results=F)
+knitr::opts_chunk$set(fig.width = 8, fig.height = 8, message=F, warning=F, echo=F, results=F, cache=TRUE)
 ```
 
-```{r}
+```{r, cache=F}
 fromscratch=F
 
 #Library Loads
@@ -31,8 +31,6 @@ p_load(scales)
 #p_load(arrow)
 options(tigris_use_cache = TRUE)
 
-
-library(tidyverse)
 
 restartspark <- function(){
   #devtools::install_github("rstudio/sparklyr")
@@ -505,12 +503,12 @@ library(huxtable)
 results_ht <- results_df %>% 
   filter(!category %in% c('null_intercept','va_vaccinations','warning_dv')) %>%
                  as_hux() %>%
-               set_number_format(col=c(4,6,8), value= fmt_percent(1)) #%>% 
-  #set_background_color(evens, everywhere, "grey80") %>% 
+               set_number_format(col=c(4,6,8), value= fmt_percent(1)) %>% 
+  set_background_color(evens, everywhere, "grey80") #%>% 
   #set_background_color(odds, everywhere, "grey90") #%>% 
   #set_all_borders(brdr(0.4, "solid", "white")) %>% 
   #set_outer_padding(4)
-results_ht[1,] <- c('Category','Count','RMSE','% Reduction','RMSE','% Reduction','RMSE','% Reduction')
+results_ht[1,] <- c('Category','Count','RMSE','Δ Baseline','RMSE','Δ Baseline','RMSE','Δ Baseline')
 
 results_ht <- 
 results_ht  %>% theme_compact()  %>% 
@@ -530,9 +528,9 @@ results_ht  %>% theme_compact()  %>%
   set_bold(31, 3:4) %>% 
   set_bold(3, 5:6)  %>% 
   set_bold(28, 7:8) %>% 
-  set_right_border(row=1:nrow(results_ht), col=2) %>% 
-  set_right_border(row=1:nrow(results_ht), col=4) %>% 
-  set_right_border(row=1:nrow(results_ht), col=6) 
+  set_right_border(row=1:nrow(results_ht)+1, col=2) %>% 
+  set_right_border(row=1:nrow(results_ht)+1, col=4) %>% 
+  set_right_border(row=1:nrow(results_ht)+1, col=6) 
   #insert_row( "Features", fill = "", colspan = 1:2) %>% insert_row( "Cumulative Exclusion", fill = "", colspan = 3:4) 
 
 ```
@@ -551,6 +549,9 @@ We start broadly, considering the role of large non-mutually exclusive categorie
 Our first measure of feature importance is predictive power of a model with access to only features from that category. Here, self reported attitudes towards global warming and solutions towards global warming provide the most direct information (RMSE 8.11, -28.4%). Alone, categories of features vary meaningfully in how much information they provide from a great deal, voting and masking behavior, to hardly any family structure vaccine supply. Our second measure of importance is how much unique information a category of features provides, measured as the change in predictive power of a model with access to every feature but those from that category. Here, model performance degrades the most when voting behavior is withheld (RMSE 7.34, -35.2%). Unlike before, variation in the importance across features is much weaker with many features providing redundant information that can be used to reconstruct the others, a difference in only -4.4% reduction in error from best to worst performance. While global warming beliefs held the most direct information, witholding them and keep all others barely impacts the model, as it can be reconstructed from other features like education and voting behavior. Lastly, we rank order categories of features from most unique to least unique information and cumulatively remove least unique (redundant) features. We find that not only does model performance not degrade, it improves, peaking when we exclude 6 categories of features, marriage, foreign born, covid, global warming, health conditions, and citizenship. Removing access to these features improves model fit, reduces over-fitting, and removing any more than these starts to degrade model performance.
 
 ```{r, results='markup'}
+
+#Note this table currently has holes in it because 5 categories completely overlapped at least one other category and so couldn't be evaluted in isoaltion.
+
 options(huxtable.knit_print_df = T)
 results_ht
 ```
@@ -559,6 +560,206 @@ results_ht
 #You have to use results asis
 #knitr::include_graphics(path=normalizePath("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/tables/results_ht.pdf"), dpi = NA, error = FALSE)
 #print_latex(results_ht)
+```
+
+```{r, cache=F}
+
+
+restartspark()
+treeshap_all <- spark_read_parquet(sc, name="treeshap_all",path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude_cumulative/shap" ,memory=F) 
+sdf_nrow(treeshap_all) #19257958
+treeshap_all %>% head()
+
+treeshap_top <- treeshap_all %>% filter(ablation=="exclude_category_transportation") #%>% dplyr::select(-starts_with("category_")) %>%
+                 #collect()
+sdf_nrow(treeshap_top)
+
+#4 causes the first error, 5 too, 6 too
+
+number_features <- treeshap_top %>%
+                   dplyr::select(ablation, test_fold,variable) %>%
+                   sdf_distinct() %>%
+                   count(ablation, test_fold) %>%
+                   collect() %>%
+                   group_by(ablation) %>%
+                   summarise(feature_count_min=min(n), feature_count_mean=mean(n), feature_count_max=max(n))
+
+folds_chosen <- treeshap_top %>%
+                   dplyr::select(ablation, test_fold,variable) %>%
+                   sdf_distinct() %>%
+                   count(variable) %>%
+                   collect() %>% 
+                   arrange(n %>% desc())
+
+shap_total <- treeshap_top %>%
+               mutate(total_shap=sum(abs(shap))) %>%
+               dplyr::select(variable,total_shap,shap) %>%
+               group_by(variable,total_shap) %>%
+               summarise(shap=sum(abs(shap))) %>%
+               mutate(shap_percent=shap/total_shap) %>%
+               arrange(shap %>% desc()) %>% collect()
+
+
+```
+
+
+```{r}
+
+library(quantreg)
+for(i in 1:length(shap_total$variable[round(shap_total$shap>0)]) ){
+  
+  var=shap_total$variable[i]
+  temp <- treeshap_top %>% 
+          dplyr::filter(variable==var) %>% 
+          dplyr::select(covariate_value,shap) %>%
+          collect()
+  
+  form= formula(shap ~ qss(covariate_value_scaled, lambda = 0.1))
+  temp1 <- temp %>% 
+           mutate(covariate_value_scaled= scale(covariate_value )[,1])
+  suppressWarnings({ 
+    model_50 <- rqss(formula=form, tau = 0.5, data = temp1 %>% na.omit() )
+    temp1$median_50 <- NA
+    temp1$median_50[!is.na(temp1$covariate_value_scaled)] <- predict(model_50, newdata=temp1)
+    
+    model_05 <- rqss(formula=form, tau = 0.05, data = temp1 %>% na.omit() )
+    temp1$model_05 <- NA
+    temp1$model_05[!is.na(temp1$covariate_value_scaled)] <- predict(model_05, newdata=temp1)
+    
+    model_95 <- rqss(formula=form, tau = 0.95, data = temp1 %>% na.omit() )
+    temp1$model_95 <- NA
+    temp1$model_95[!is.na(temp1$covariate_value_scaled)] <- predict(model_95, newdata=temp1)
+  })
+    
+  suppressWarnings({ 
+    p <- temp1 %>%
+          ggplot(aes(x=covariate_value %>% scale(),y=shap)) +
+          geom_ribbon(aes(ymin=model_05, ymax=model_95), color="pink", fill='pink') +
+          geom_line(aes(x=covariate_value_scaled, y=median_50), color="red", size=0.15) +
+          #geom_point() + 
+          #geom_quantile(method = "rqss", lambda = 0.1, quantiles = c(0.05, 0.95), na.rm=T, linetype=c('solid'), color="red", size=0.75,
+          #              formula=form) +
+          #geom_quantile(method = "rqss", lambda = 0.1, quantiles = c(0.5), na.rm=T, linetype=c('solid'), color="red", formula=form , size=0.15) +
+          theme_void() + 
+          geom_hline(yintercept=0, linetype="dashed", color = "blue", size=0.1) + 
+          geom_vline(xintercept=0, linetype="dashed", color = "blue", size=0.1)
+  })
+  ggsave(filename=glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_ablation_marginal_fx_{i}.png") ,
+         plot = p , height=0.1, width=0.3)
+}
+
+```
+
+```{r, results="asis"}
+
+df <- 
+shap_total %>% 
+  full_join(folds_chosen) %>% 
+  mutate(shap_percent_cumsum=cumsum(shap_percent)) %>%
+
+  dplyr::select(variable, n, shap, shap_percent, shap_percent_cumsum) %>%
+  
+  mutate(variable= variable %>%
+           str_replace_all("_",' ') %>% 
+           str_replace_all("donaldjtrump 2020",'Trump Vote AAAA') %>%
+           str_replace_all("donaldtrump 2016",'Trump Vote BBBB') %>%
+           str_replace_all("[0-9]{4}",'') %>% 
+           str_replace_all("AAAA",'2020') %>%
+           str_replace_all("BBBB",'2016') %>%
+           str_replace_all("perc$|perc |percent of |per capita |percent ",'') %>% 
+           str_replace_all("percap",'') %>% 
+           str_replace_all("change in people ",'Δ ') %>% 
+           str_replace_all("\\(.*?\\)",' ') %>% 
+           str_replace_all("--total number of adherents",' ') %>% 
+           str_replace_all(" years and over",'<') %>% 
+           str_replace_all(" under ",'≥') %>% 
+           str_replace_all("  ",' ') %>% 
+           str_replace_all(" ,",',') %>%
+           trimws()
+  ) %>%
+
+  mutate(marginal_fx = glue::glue("![](./plots/p_ablation_marginal_fx_{row_number()}.png)")) %>% 
+  filter(round(shap)>0)  %>%
+  as_hux() %>% 
+  theme_compact() %>%
+  insert_row("", "", "Shap", "", "","", after = 0) %>%
+  set_header_rows(1:2, TRUE) %>%  
+  style_headers(bold = TRUE, text_color = "black") %>% 
+  set_caption("") %>%
+  merge_cells(1, 1:2) %>% 
+  merge_cells(1, 3:5)  
+  #merge_cells(1, 5:6) %>% 
+  #merge_cells(1, 7:8) %>%
+  
+markdown(df)[, 6] <- TRUE
+col_width(df)[1] <- 0.5
+wrap(df)[1]  <- T
+df[2,] <- c('Feature','Folds','Sum', '%','Cum. %','Marginal Fx.')
+df %>% 
+  set_right_border(row=1:nrow(df), col=1) %>%
+  set_right_border(row=1:nrow(df), col=2) %>%
+  set_right_border(row=1:nrow(df), col=5) %>%
+  
+  set_number_format(col=c(4,5), value= fmt_percent(1)) %>% 
+  set_background_color(evens, everywhere, "grey80") #%>% 
+  #set_background_color(odds, everywhere, "grey90") 
+               
+
+```
+
+```{r, eval=F}
+
+used_vars_df <- treeshap_top %>% 
+  dplyr::group_by(ablation, k_smallest, variable) %>% 
+    summarise(shap_variable_total= shap %>% abs() %>% sum() ) %>%
+  dplyr::group_by(ablation,  k_smallest) %>% 
+    mutate(shap_cluster_total=shap_variable_total %>% abs() %>% sum()) %>%
+  ungroup() %>%
+  #filter(shap_cluster_total==max(shap_cluster_total)) %>% 
+  dplyr::arrange(ablation,shap_cluster_total %>% desc(),shap_variable_total %>% desc() ) %>%
+  collect()
+
+rhs_codebook_total_clustered <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_codebook_total_clustered.Rds")
+
+
+top_5_vars_by_abblation <- used_vars_df %>% group_by(ablation) %>% slice_head(n = 5) %>%
+  filter(shap_cluster_total==max(shap_cluster_total)) %>%
+  left_join(rhs_codebook_total_clustered %>% dplyr::select(variable=variable, description  )) %>%
+  mutate(description_clean = description %>%
+           str_replace_all("_",' ') %>% 
+           str_replace_all("donaldjtrump 2020",'Trump Vote AAAA') %>%
+           str_replace_all("donaldtrump 2016",'Trump Vote BBBB') %>%
+           str_replace_all("[0-9]{4}",'') %>% 
+           str_replace_all("AAAA",'2020') %>%
+           str_replace_all("BBBB",'2016') %>%
+           str_replace_all("perc$|perc |percent of |per capita |percent ",'') %>% 
+           str_replace_all("percap",'') %>% 
+           str_replace_all("change in people ",'Δ ') %>% 
+           str_replace_all("\\(.*?\\)",' ') %>% 
+           str_replace_all("--total number of adherents",' ') %>% 
+           str_replace_all(" years and over",'<') %>% 
+           str_replace_all(" under ",'≥') %>% 
+           str_replace_all("  ",' ') %>% 
+           str_replace_all(" ,",',') %>%
+           trimws()
+         )
+#top_5_vars_by_abblation %>% View()
+
+
+#install.packages('formattable')
+library(formattable)
+top_5_vars_by_abblation %>% 
+  mutate(shap_variable_total =  color_bar("lightgreen")(shap_variable_total %>% round())  ) %>%
+  dplyr::select(ablation,k_smallest,description_clean,shap=shap_variable_total) %>%
+  mutate(ablation=ablation %>% as.character()) %>%
+  mutate(k_smallest=k_smallest %>% as.character()) %>%
+  
+  kbl(format='html',booktabs = TRUE, longtable = TRUE, escape = F, align = 'c' ) %>% #
+  column_spec(3, width = "10cm" ) %>%
+  column_spec(4, width = "1cm" ) %>%
+  collapse_rows(columns = 1:2, valign = "top")
+
+
 ```
 
 

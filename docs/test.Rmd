@@ -1,0 +1,55 @@
+---
+title: What explains U.S. Covid-19 Vaccination Rates? A Machine Learning Workflow
+  for Ecological Inference
+output:
+  html_document:
+    df_print: paged
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+bibliography: WhatExplainsUSCovid19VaccinationRates.bib
+---
+
+![](p_ablation_marginal_fx_1.png)
+
+```{r, results='asis'}
+library(tidyverse)
+library(huxtable)
+
+df <- data.frame(image="![](p_ablation_marginal_fx_1.png){width=50%}") %>% as_hux() 
+set_markdown(df, 1, 1)
+#df %>% as_hux() %>% set_markdown(row=1 , col=1, value=T)
+
+```
+
+
+```{r}
+jams[3, 2] <- "~2.10~ **Sale!** 1.50"
+set_markdown(jams, 3, 2)
+```
+
+```{r, results='asis'}
+md_hux <- hux(x = c(
+  "Ordinary text",
+  "*Italic*, **bold**",
+  "***Bold italic***",
+  "~Strikethrough~",
+  "Inline `code`",
+  "Text with a [link](https://cran.r-project.org)",
+  "Text with an image ![bones](./plots/p_ablation_marginal_fx_2.png)",
+  "Thematic break\n\n----\n",
+  "# ATX heading\n",
+  "Setext heading\n==============",
+  "Para\n\n    code block\nPara",
+  "Text\n```\nfenced code\n```\ntext",
+  "Text\n- Bullet 1\n- Bullet 2\n",
+  "Text\n> Blockquote\n> Blockquote\n\nText"
+), add_colnames = FALSE)
+
+md_hux <- cbind(md_hux, md_hux)
+markdown(df)[, 1] <- TRUE
+df
+```
+
+
+
