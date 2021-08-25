@@ -2627,7 +2627,7 @@ rhs_codebook <- rhs_combined %>%
                   mutate(category_population = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "population|^pop_") %>%
                   mutate(category_family_structure = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "children|adults|grandchildren|family type|birth") %>%
                   mutate(category_disabilities = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "disability|hearing|vision|cognitive|ambulatory|difficulty|disabilities") %>%
-                  mutate(category_insurance = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "insurance|medicaid|va health care|tricare|uninsured") %>%
+                  mutate(category_insurance = dataset  %rlike%  "census_2020_actual|census2020|acs5|countyhealthrankings" & variable  %rlike%  "insurance|medicaid|va health care|tricare|uninsured") %>%
                   mutate(category_military = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "veteran|civilian|military|tricare") %>%
                   mutate(category_housing = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "housing|occupancy|tenure|mortgage|heating|rent|value|price|mortgage") %>%
                   mutate(category_economy_employment = dataset  %rlike%  "bae|cew") %>%
@@ -3214,7 +3214,7 @@ string
 
 ```
 
-```{r}
+```{r, eval=F}
 table(df_clustered$k_smallest)
 
 #I think we now break descriptions into words and predict which of each clustering by word, and that becomes the cluster summary

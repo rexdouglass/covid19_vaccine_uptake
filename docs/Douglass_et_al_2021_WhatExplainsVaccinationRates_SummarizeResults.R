@@ -57,32 +57,110 @@ restartspark <- function(){
 restartspark()
 
 
+x_all <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/x_train.Rds")
+dim(x_all)
+x_all[!is.finite(x_all)] <- NA
+not_missingness <- colSums( !is.na(x_all) ) # / nrow(rhs_combined_wide)
+nonzero <- colSums( x_all>0 , na.rm = T)
+both <- colSums( !is.na(x_all) & x_all>0  , na.rm = T)
+table(not_missingness<200) #there are 6k that have fewer than 500 obs
+table(nonzero<200) #there are 6k that have fewer than 500 obs
+table(both<200) #there are 6k that have fewer than 500 obs
+x_all <- x_all[,both>500]
+
+rhs_codebook_total_coded <- arrow::open_dataset("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs_codebook_spark/") %>% collect()
+rhs_codebook_total_coded <- rhs_codebook_total_coded %>% filter(!category_warning_dv %in% 1) #We're excluding warning DV from this
+dim(rhs_codebook_total_coded)
+rhs_codebook_total_coded <- rhs_codebook_total_coded %>% filter(variable_clean_255 %in% colnames(x_all))
+rhs_codebook_total_coded %>% dplyr::select(starts_with("category")) %>% colSums(na.rm=T) %>% sort()
+variable_groups <- rhs_codebook_total_coded %>% dplyr::select(starts_with("category")) %>% colSums(na.rm=T) %>% sort() %>% names()
+variable_groups <- variable_groups[!variable_groups %in% c("category_warning_dv","category_va_vaccinations")] #va vvaccinations isn't in xtable right onw and that's fine
+x_all_variables <- data.frame(variables=colnames(x_all))
+
+dim(rhs_codebook_total_coded) 
+number_features <- rhs_codebook_total_coded %>% select(starts_with("category_")) %>% summarise_all(sum) %>% t() %>% as.data.frame() %>% rownames_to_column(var = "ablation") %>% rename(features=V1)
 
 yid_test_include <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_include/performance/" ,memory=F) %>% collect() #include is broken
 yid_test_exclude <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude/performance/" ,memory=F) %>% collect()
 yid_test_cumulative <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude_cumulative/performance/" ,memory=F) %>% collect()
 
+null_intercept <- yid_test_include %>% collect() %>% dplyr::select(fold, y_share18plus)
+null_intercept <- null_intercept %>% left_join(
+  bind_rows(
+    null_intercept %>% filter(fold!=1) %>% summarise(y_hat_null_intercept=y_share18plus %>% mean()) %>% mutate(fold=1),
+    null_intercept %>% filter(fold!=2) %>% summarise(y_hat_null_intercept=y_share18plus %>% mean()) %>% mutate(fold=2),
+    null_intercept %>% filter(fold!=3) %>% summarise(y_hat_null_intercept=y_share18plus %>% mean()) %>% mutate(fold=3),
+    null_intercept %>% filter(fold!=4) %>% summarise(y_hat_null_intercept=y_share18plus %>% mean()) %>% mutate(fold=4),
+    null_intercept %>% filter(fold!=5) %>% summarise(y_hat_null_intercept=y_share18plus %>% mean()) %>% mutate(fold=5)
+  )
+)
+
+performance_null <- null_intercept %>% summarize(rmse_null_intercept=Metrics::rmse(y_hat_null_intercept, y_share18plus), mae_null_intercept=Metrics::mae(y_hat_null_intercept, y_share18plus))  %>% mutate(ablation="null_intercept")
 performance_include <- yid_test_include %>% collect() %>% group_by(ablation) %>% summarize(rmse_include=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_include=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
 performance_exclude <- yid_test_exclude %>% collect() %>% group_by(ablation) %>% summarize(rmse_exclude=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_exclude=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
 performance_exclude_cumulative <- yid_test_cumulative %>% collect() %>% group_by(ablation) %>% summarize(rmse_exclude_cumulative=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_exclude_cumulative=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
 
-results <- performance_include %>% mutate(ablation=ablation %>% str_replace("keep_","")) %>%
-  full_join(performance_exclude %>% 
-              mutate(ablation=ablation %>% str_replace("keep_","")) ) %>% 
-  full_join(performance_exclude_cumulative %>%
+results <-  performance_null  %>% 
+            full_join(performance_include %>%  mutate(ablation=ablation %>% str_replace("keep_","")) ) %>%
+            full_join(performance_exclude %>% 
+                        mutate(ablation=ablation %>% str_replace("keep_","")) ) %>% 
+            full_join(performance_exclude_cumulative %>%
               mutate(ablation=ablation %>% str_replace("exclude_","") ) ) %>% 
+              full_join(number_features) %>% 
               arrange(rmse_exclude %>% desc() ) %>% 
-              mutate(baseline=ifelse(ablation=="exclude_nothing", rmse_exclude, NA)) %>%
-              mutate(baseline=max(baseline, na.rm=T)) %>%
-              mutate(rmse_exclude_cumulative_percbasline= round( 1 - (rmse_exclude_cumulative/baseline) , 2) ) %>%
-              mutate(rmse_exclude_percbasline= round( 1 - rmse_exclude/baseline , 2 ) ) %>%
-              mutate(rmse_include_percbasline= round( 1 -  rmse_include/baseline, 2 ) )
-results %>% view()
 
+              mutate(rmse_null_intercept=max(rmse_null_intercept, na.rm=T)) %>%
+              mutate(mae_null_intercept=max(mae_null_intercept, na.rm=T)) %>%
+              mutate(rmse_include_percbasline= round( 1 -  rmse_include/rmse_null_intercept, 4 ) * -1 ) %>%
+              mutate(rmse_exclude_percbasline= round( 1 - rmse_exclude/rmse_null_intercept , 4 ) * -1 ) %>%
+              mutate(rmse_exclude_cumulative_percbasline= round( 1 - (rmse_exclude_cumulative/rmse_null_intercept) , 4) * -1 ) %>%
+              mutate(rmse_include= round(rmse_include*100,2 )) %>%
+              mutate(rmse_exclude= round(rmse_exclude*100,2 )) %>%
+              mutate(rmse_exclude_cumulative= round(rmse_exclude_cumulative*100,2 )) 
+
+                
+#results %>% view()
+
+results_df <- results %>% 
+  mutate(ablation=ablation %>% str_replace("category_","") ) %>%
+  dplyr::select(category=ablation, features=features, rmse_include, rmse_include_percbasline, rmse_exclude, rmse_exclude_percbasline, rmse_exclude_cumulative, rmse_exclude_cumulative_percbasline)
 
 #install.packages("huxtable")
 library(huxtable)
-results_ht <- results %>% dplyr::select(ablation, rmse_include,rmse_include_percbasline, rmse_exclude,rmse_exclude_percbasline, rmse_exclude_cumulative, rmse_exclude_cumulative_percbasline ) %>% as_hux()
+results_ht <- results_df %>% as_hux() %>%
+               set_number_format(col=c(4,6,8), value= fmt_percent(1)) #%>% 
+  #set_background_color(evens, everywhere, "grey80") %>% 
+  #set_background_color(odds, everywhere, "grey90") #%>% 
+  #set_all_borders(brdr(0.4, "solid", "white")) %>% 
+  #set_outer_padding(4)
+results_ht[1,] <- c('Category','Count','RMSE','% Reduction','RMSE','% Reduction','RMSE','% Reduction')
+
+results_ht %>% 
+  insert_row("Features", "", "Only this Category", "", "All but Category","","Cumulatively Included Categories", "", after = 0) %>% 
+  merge_cells(1, 1:2) %>% 
+  merge_cells(1, 3:4) %>% 
+  merge_cells(1, 5:6) %>% 
+  merge_cells(1, 7:8) %>%
+ #set_align(1, everywhere, "center") %>%
+  #insert_row("County Vaccine Uptake Predictive Performance", "", "", "", "","","", "", after = 0) %>% 
+  #merge_cells(1, 1:8) %>% 
+  #set_align(1, everywhere, "center") %>%
+  #theme_basic()  %>%
+  set_header_rows(1:2, TRUE) %>% 
+  style_headers(bold = TRUE, text_color = "black") %>% 
+  set_caption("County Vaccine Uptake Predictive Performance by Inclusion/Exclusion of Groups of Features") %>% 
+  set_bold(31, 3:4) %>% 
+  set_bold(3, 5:6)  %>% 
+  set_bold(28, 7:8) %>% 
+  set_right_border(row=1:nrow(results_ht), col=2) %>% 
+  set_right_border(row=1:nrow(results_ht), col=4) %>% 
+  set_right_border(row=1:nrow(results_ht), col=6) 
+  #insert_row( "Features", fill = "", colspan = 1:2) %>% insert_row( "Cumulative Exclusion", fill = "", colspan = 3:4) 
+
+
+
+
+
 
 for(i in 1:ncol(df_clustered_thinned_ht) ) { #start on row 2 because 1 is the columns
   #print(i)

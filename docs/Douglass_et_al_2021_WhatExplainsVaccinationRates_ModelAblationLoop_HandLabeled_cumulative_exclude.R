@@ -158,8 +158,9 @@ eligible_variables <- rhs_codebook_total_coded$variable_clean_255
 print(length(eligible_variables)) #24,265 
 
 
-variable_groups <- performance_exclude %>% arrange(rmse_exclude) %>% pull(ablation) %>% str_replace("keep_",'') %>% setdiff("exclude_nothing") %>%
-                   str_replace('poverty_income_earnings_food_stamps_labor_force_employment','poverty_income_earnings_food_stamps_labor_force_employment_earner_owner_costs') %>% str_replace('household','household_rooms_vacancy_allocation_of_allocation_rate') #We're cumulatively going to exclude more an more of these
+variable_groups <- performance_exclude %>% arrange(rmse_exclude) %>% pull(ablation) %>% 
+                   str_replace("keep_",'') %>% setdiff("exclude_nothing") #%>%
+                   #str_replace('poverty_income_earnings_food_stamps_labor_force_employment','poverty_income_earnings_food_stamps_labor_force_employment_earner_owner_costs') %>% str_replace('household','household_rooms_vacancy_allocation_of_allocation_rate') #We're cumulatively going to exclude more an more of these
 
 for(g in 1:length(variable_groups)  ){
     #group="transportation"

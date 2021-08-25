@@ -89,6 +89,10 @@ get_lgbm_cv_preds <- function(cv){
 }
   
 
+variable_groups <- setdiff(variable_groups, c("category_amenities","category_disabilities","category_longer_term_mobility","category_marriage","category_transportation",
+                                              "category_sex" #need to get the census2020 numbers without age just toal gender
+                                              )
+                           )
 library(doParallel)
 cl <- makeCluster(4)
 registerDoParallel(cl)
@@ -102,7 +106,10 @@ registerDoParallel(cl)
     print(group)
     ablation=paste0("keep_",group)
     
-    condition <- rhs_codebook_total_coded[,group] == T #reversing it for exclude, that and the file path are the only two things I changed for this script
+    #I realize we don't just want this to be True we want everything else to be False
+    condition1 <- rhs_codebook_total_coded[,group] == T #reversing it for exclude, that and the file path are the only two things I changed for this script
+    condition2 <- rhs_codebook_total_coded %>% dplyr::select(starts_with("category_")) %>% dplyr::select(-starts_with(group)) %>% rowSums() == 0
+    condition <- condition1 & condition2
     eligible_variables <- rhs_codebook_total_coded$variable_clean_255[condition]
     print(length(eligible_variables))
     print(eligible_variables %>% head(10))
