@@ -512,7 +512,7 @@ results_ht[1,] <- c('Category','Count','RMSE','% Reduction','RMSE','% Reduction'
 
 results_ht <- 
 results_ht  %>% theme_compact()  %>% 
-  insert_row("Features", "", "Only this Category", "", "All but this Category","","Cumulatively Include Categories", "", after = 0) %>% 
+  insert_row("Features", "", "Only this Category", "", "All but this Category","","Cumulatively Remove Categories", "", after = 0) %>% 
   merge_cells(1, 1:2) %>% 
   merge_cells(1, 3:4) %>% 
   merge_cells(1, 5:6) %>% 
@@ -544,6 +544,10 @@ results_ht  %>% theme_compact()  %>%
 
 ```
 
+We start broadly, considering the role of large non-mutually exclusive categories of features that share an intended substantive concept. We provide three views on the importance of each category of features. In each case, we evaluate features in terms of their impact on out of sample performance, reported here as RMSE and annotated with percent reduction in error from a null intercept only baseline, which has a RMSE of 11.3% and a MEA of 9%. For example, our best performing model/set of features has a RMSE of 6.74 which is a -40.5% reduction in predictive error from the baseline.
+
+Our first measure of feature importance is predictive power of a model with access to only features from that category. Here, self reported attitudes towards global warming and solutions towards global warming provide the most direct information (RMSE 8.11, -28.4%). Alone, categories of features vary meaningfully in how much information they provide from a great deal, voting and masking behavior, to hardly any family structure vaccine supply. Our second measure of importance is how much unique information a category of features provides, measured as the change in predictive power of a model with access to every feature but those from that category. Here, model performance degrades the most when voting behavior is withheld (RMSE 7.34, -35.2%). Unlike before, variation in the importance across features is much weaker with many features providing redundant information that can be used to reconstruct the others. Withholding global warming beliefs for example barely impacts the model, as it can be reconstructed easily from education and voting behavior. Lastly, we rank order categories of features from most unique to least unique information and cumulatively remove least unique (redundant) features. We find that not only does model performance not degrade, it improves, peaking when we exclude 6 categories of features, marriage, foreign born, covid, global warming, health conditions, and citizenship. Removing access to these features improves model fit, reduces over-fitting, and removing any more than these starts to degrade model performance.
+
 ```{r, results='markup'}
 options(huxtable.knit_print_df = T)
 results_ht
@@ -554,5 +558,8 @@ results_ht
 #knitr::include_graphics(path=normalizePath("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/tables/results_ht.pdf"), dpi = NA, error = FALSE)
 #print_latex(results_ht)
 ```
+
+
+
 
 
