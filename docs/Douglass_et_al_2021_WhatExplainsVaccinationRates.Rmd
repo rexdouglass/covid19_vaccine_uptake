@@ -650,6 +650,9 @@ for(i in 1:length(shap_total$variable[round(shap_total$shap>0)]) ){
 
 ```
 
+
+We dissagregate the role of individual features from our best performing model below in Table XXXX. Nearly a quarter of the model's weight assigned to predictions comes from a single feature, share of Trump Vote in 2020, and it is the only feature that was chosen in all 5 folds. Having Trump share below 50% has a consistent flat increase in vaccine uptake, and then share approaching and surpassing 50% leads to monotonic and near linear decline in uptake. Trump Vote share in 2016 was chosen in 4 out of 5 folds and contributes about another 10% to the model's predictions, with a similar shape as 2020 vote. Together they account for a third of the model's weights assigned to out of sample predictions. The next most impactful feature is demographic, percent share African American which accounts for about 4% of model weight. Its contribution is to reduce expected vaccine uptake for counties that are above average African American, monotonically in the share of that population.
+
 ```{r, results="asis"}
 
 df <- 

@@ -54,6 +54,7 @@ rhs_codebook_total_coded <- rhs_codebook_total_coded %>% filter(variable_clean_2
 rhs_codebook_total_coded %>% dplyr::select(starts_with("category")) %>% colSums(na.rm=T) %>% sort()
 variable_groups <- rhs_codebook_total_coded %>% dplyr::select(starts_with("category")) %>% colSums(na.rm=T) %>% sort() %>% names()
 variable_groups <- variable_groups[!variable_groups %in% c("category_warning_dv","category_va_vaccinations")] #va vvaccinations isn't in xtable right onw and that's fine
+variable_groups <- c("category_withold_nothing",variable_groups)
 
 Folds1 <- readRDS( "/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/Folds1.Rds")
 length(unlist(Folds1))
