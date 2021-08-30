@@ -1125,24 +1125,76 @@ rhs_vaccines_gov_counties  %>% rex_clean() %>% arrow::write_parquet(glue::glue("
 #https://www.countyhealthrankings.org/explore-health-rankings/rankings-data-documentation
 a00 <- fread("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data/countyhealthrankings/analytic_data2021.csv") %>% clean_names()
 
+countyhealthrankings2019 <- fread("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data/countyhealthrankings/analytic_data2019.csv") %>% clean_names()
+
+
 #On how they get county estimates when the unit is MMSA
 #https://www.cdc.gov/brfss/smart/smart_faq.htm
 #Obtaining local data from Behavior Risk Factor Surveillance System (BRFSS)
 #https://www.citymatch.org/wp-content/uploads/2018/12/Obtaining-local-data-from-Behavior-Risk-Factor-Surveillance.pdf
 
-rhs_countyhealthrankings <- a00 %>% dplyr::select(
+rhs_countyhealthrankings <- 
+  countyhealthrankings2019 %>% 
+  dplyr::select(
+    
   fips=x5_digit_fips_code, 
+  
   poor_or_fair_health_perc_brfss2018 = poor_or_fair_health_raw_value,
+  
   low_birthweight_perc_nchs2019=low_birthweight_raw_value,
+  
   adult_smoking_perc_brfss2018=adult_smoking_raw_value,
+  
   adult_obesity_perc_dss2017=adult_obesity_raw_value, #United States Diabetes Surveillance System
+  
   uninsured_perc_sahi2018 =uninsured_raw_value, #Small Area Health Insurance Estimates
+  uninsured_children_perc_sahi2018=uninsured_children_raw_value,
+  
   primary_care_physicians_percap_2018 =primary_care_physicians_raw_value, #Area Health Resource File/American Medical Association
+  
+
   dentists_percap_2019 =dentists_raw_value, #Area Health Resource File/National Provider Identification file
+  
   mental_health_providers_percap_2020 =mental_health_providers_raw_value , #CMS National Provider Identification
+  
+  
   preventable_hospital_stays_percap2018 =preventable_hospital_stays_raw_value, #Rate of hospital stays for ambulatory-care sensitive conditions per 100,000 Medicare enrollees.
-  mammography_screening_percap2018 =mammography_screening_raw_value, #Percentage of female Medicare enrollees ages 65-74 that received an annual mammography screening.
-  flu_vaccinations_perc_medicare2018 =flu_vaccinations_raw_value #Percentage of fee-for-service (FFS) Medicare enrollees that had an annual flu vaccination.
+  
+  preventable_hospital_stays_black_percap2018 =preventable_hospital_stays_black,
+  preventable_hospital_stays_hispanic_percap2018 =preventable_hospital_stays_hispanic,
+  preventable_hospital_stays_white_percap2018 =preventable_hospital_stays_white,
+  
+  mammography_screening_perc2018 =mammography_screening_raw_value, #Percentage of female Medicare enrollees ages 65-74 that received an annual mammography screening.
+  mammography_screening_black_perc2018=mammography_screening_black,
+  mammography_screening_hispanic_perc2018=mammography_screening_hispanic,
+  mammography_screening_white_perc2018=mammography_screening_white,
+  
+  #Percentage of annual Medicare enrollees having an annual flu vaccination
+  flu_vaccinations_perc_medicare2018 =flu_vaccinations_raw_value , #Percentage of fee-for-service (FFS) Medicare enrollees that had an annual flu vaccination.
+  flu_vaccinations_black_perc_medicare2018 =flu_vaccinations_black,
+  flu_vaccinations_hispanic_perc_medicare2018 =flu_vaccinations_hispanic,
+  flu_vaccinations_white_perc_medicare2018 =flu_vaccinations_white,
+  
+  teen_births_percap=teen_births_raw_value, #Births per 1,000 females ages 15-19
+  teen_births_black_percap=teen_births_black,
+  teen_births_hispanic_percap=teen_births_hispanic,
+  teen_births_white_percap=teen_births_white,
+  
+  infant_mortality_percap=infant_mortality_raw_value,
+  infant_mortality_black_percap=infant_mortality_black,
+  infant_mortality_hispanic_percap=infant_mortality_hispanic,
+  infant_mortality_white_percap=infant_mortality_white,
+  
+  child_mortality_percap=child_mortality_raw_value,
+  child_mortality_black_percap=child_mortality_black,
+  child_mortality_hispanic_percap=child_mortality_hispanic,
+  child_mortality_white_percap=child_mortality_white  ,
+
+  children_in_poverty_percap=children_in_poverty_raw_value,
+  children_in_poverty_black_percap=children_in_poverty_black,
+  children_in_poverty_hispanic_percap=children_in_poverty_hispanic,
+  children_in_poverty_white_percap=children_in_poverty_white
+
 ) %>%
   pivot_longer(-fips) %>%
    mutate(description=paste0("", name)) %>%
@@ -1292,6 +1344,8 @@ rhs_jhu_state <- readRDS("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationR
 
 
 ### Religion
+
+#### THERDA 2010
 
 U.S. Religion Census: Religious Congregations and Membership Study, 2010 (County File)
 https://www.thearda.com/Archive/Files/Descriptions/RCMSCY10.asp
@@ -2042,6 +2096,34 @@ rhs_thearda  %>% rex_clean() %>% arrow::write_parquet(glue::glue("/mnt/8tb_a/rwd
 rhs_thearda %>% mutate(fips_variable=paste0(fips,variable)) %>% filter(duplicated(fips_variable)) #no dupes here yet so it's getting introduced lower
 
 ```
+
+#### PRRI 2020
+
+```{r}
+
+#Had to do a lot of this by hand
+prri_2020 <-
+  fread("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_in/prri/view-source_https___datawrapper.dwcdn.net_eK6to_semicolonseperated3_cleaned.csv", sep=";") %>%
+  janitor::clean_names() %>%
+  mutate(unaffiliated = unaffiliated %>% str_replace_all('[^0-9]','') %>% as.numeric() )
+dim(prri_2020)
+
+rhs_prri  <- prri_2020 %>%  
+                   dplyr::select(-name,-population) %>%
+                   pivot_longer(-fips_code) %>%
+                    mutate(dataset='prri') %>%
+                    mutate(description= paste0("percent religion ", name, " in 2020")  ) %>%
+                    mutate(variable=paste0("prri_percent_religion_",name %>% tolower())) %>% 
+                    filter(!is.na(value)) %>% rename(fips=fips_code)
+
+rhs_prri %>% mutate(fips_variable=paste0(fips,variable)) %>% filter(duplicated(fips_variable)) #no dupes here yet so it's getting introduced lower
+
+rhs_prri  %>% rex_clean() %>% arrow::write_parquet(glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs/rhs_prri.parquet"))
+
+
+```
+
+
 ## Climate Change
 
 ```{r}
@@ -2548,6 +2630,7 @@ lhs_state  %>%
 
 ```{r}
 
+restartspark()
 
 #filenames <- list.files("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs/", full.names=TRUE)  
 #cols <- lapply(filenames, FUN=function(x){ x %>%  arrow::read_parquet() %>% colnames() } ) # even this is not great
@@ -2613,12 +2696,13 @@ rhs_codebook <- rhs_combined %>%
                  sdf_distinct() %>% #don't do regular distinct or it'll take crazy long
                   mutate(category_sex = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "sex|male|women|men|female") %>%
                   mutate(category_age = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "age|years_old|^vap_") %>%
-                  mutate(category_race = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "race|black|indian|hispanic|white|ancestry|asian|hawaiian|language|pop_aian|vap_hisp|vap_two|vap_other|vap_aian|pop_two_|pop_nhpi|pop_hisp|pop_other") %>%
+                  mutate(category_race = dataset  %rlike%  "census_2020_actual|census2020|acs5|countyhealthrankings|prri" & variable  %rlike%  "race|black|indian|hispanic|white|ancestry|asian|hawaiian|language|pop_aian|vap_hisp|vap_two|vap_other|vap_aian|pop_two_|pop_nhpi|pop_hisp|pop_other") %>%
                   mutate(category_citizenship = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "citizenship|naturalization") %>%
                   mutate(category_foreign_born = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "nativity|foreign|place_of_birth") %>%
                   mutate(category_marriage = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "marital|spouse|widowed") %>%
                   mutate(category_education = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "education|school|college|degree") %>%
-                  mutate(category_wealth_employment = dataset  %rlike%  "census_2020_actual|census2020|acs5" &  variable  %rlike%  "poverty|income|earnings|food_stamps|labor_force|employment|earner|owner_costs") %>%
+                  mutate(category_wealth_employment = dataset  %rlike%  "census_2020_actual|census2020|acs5|countyhealthrankings" &  variable  %rlike% 
+                           "poverty|income|earnings|food_stamps|labor_force|employment|earner|owner_costs") %>%
                   mutate(category_longer_term_mobility = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "geographical_mobility") %>%
                   mutate(category_transportation = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "transportation") %>%
                   mutate(category_occupation = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "work|ocupation|employment") %>%
@@ -2631,7 +2715,9 @@ rhs_codebook <- rhs_combined %>%
                   mutate(category_military = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "veteran|civilian|military|tricare") %>%
                   mutate(category_housing = dataset  %rlike%  "census_2020_actual|census2020|acs5" & variable  %rlike%  "housing|occupancy|tenure|mortgage|heating|rent|value|price|mortgage") %>%
                   mutate(category_economy_employment = dataset  %rlike%  "bae|cew") %>%
-                  mutate(category_health_conditions = dataset  %rlike%  "countyhealthrankings"  & variable  %rlike% "obesity|smoking|birthweight|fair_health|low_birthweight|hospital_stays" ) %>%
+  
+                  mutate(category_health_conditions = dataset  %rlike%  "countyhealthrankings"  & variable  %rlike% "obesity|smoking|birthweight|fair_health|low_birthweight|hospital_stays|mortality|births" ) %>%
+  
                   mutate(category_healthcare_services = dataset  %rlike%  "countyhealthrankings"  & variable  %rlike% "dentists|mammography|mental_health|physicians" ) %>%
                   mutate(category_covid = dataset  %rlike%  "covid19projections" ) %>%
                   mutate(category_google_mobility = dataset  %rlike%  "google" & description  %rlike% "mobility"  ) %>%
@@ -2640,7 +2726,7 @@ rhs_codebook <- rhs_combined %>%
                   mutate(category_voting = dataset  %rlike%  "MIT Election Data and Science Lab, 2018, County Presidential Election Returns 2000-2020") %>%
                   mutate(category_masking = dataset  %rlike%  "NYT") %>%
                   mutate(category_mobility_safegraph = dataset  %rlike%  "safegraph") %>%
-                  mutate(category_religion = dataset  %rlike%  "therda") %>%
+                  mutate(category_religion = dataset  %rlike%  "therda|prri" ) %>%
                   mutate(category_va_vaccinations = variable  %rlike%  "through_va") %>%
                   mutate(category_warning_dv = variable  %rlike%  "WARNING|WARNING_DV_") %>%
                   mutate(category_global_warming = dataset  %rlike%  "yale") %>%

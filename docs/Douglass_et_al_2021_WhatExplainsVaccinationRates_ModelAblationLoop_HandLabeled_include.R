@@ -93,6 +93,8 @@ variable_groups <- setdiff(variable_groups, c("category_amenities","category_dis
                                               "category_sex" #need to get the census2020 numbers without age just toal gender
                                               )
                            )
+variable_groups <- c("category_withold_nothing",variable_groups)
+
 library(doParallel)
 cl <- makeCluster(4)
 registerDoParallel(cl)
@@ -107,12 +109,20 @@ registerDoParallel(cl)
     ablation=paste0("keep_",group)
     
     #I realize we don't just want this to be True we want everything else to be False
-    condition1 <- rhs_codebook_total_coded[,group] == T #reversing it for exclude, that and the file path are the only two things I changed for this script
-    condition2 <- rhs_codebook_total_coded %>% dplyr::select(starts_with("category_")) %>% dplyr::select(-starts_with(group)) %>% rowSums() == 0
-    condition <- condition1 & condition2
-    eligible_variables <- rhs_codebook_total_coded$variable_clean_255[condition]
+
+
+    if(group != 'category_withold_nothing'){
+      condition1 <- rhs_codebook_total_coded[,group] == T #reversing it for exclude, that and the file path are the only two things I changed for this script
+      condition2 <- rhs_codebook_total_coded %>% dplyr::select(starts_with("category_")) %>% dplyr::select(-starts_with(group)) %>% rowSums() == 0
+      condition <- condition1 & condition2
+      eligible_variables <- rhs_codebook_total_coded$variable_clean_255[condition]
+    } else {
+      eligible_variables <- rhs_codebook_total_coded$variable_clean_255 #make them all
+    }
     print(length(eligible_variables))
     print(eligible_variables %>% head(10))
+    
+    
     folds=1:5 #We can iterate quickly by just doing one fold over many variables and then switch it to 6 when we're running the full overnight
     for(fold in folds){
       #fold=1
@@ -198,7 +208,7 @@ registerDoParallel(cl)
       toc() #30 seconds here
       
       #Here we decide which to keep, requiring it to appear in at least 3 any more or less drives down performance a lot
-      importances_all5 <- importances %>% filter(folds_used>=2) %>% arrange(folds_used %>% desc(), gain %>% desc()) #leave this at 3, 4 really degrades performance
+      importances_all5 <- importances %>% filter(folds_used>=3) %>% arrange(folds_used %>% desc(), gain %>% desc()) #leave this at 3, 4 really degrades performance
       
       vars_pruned <- importances_all5$variable %>% as.character()
       length(vars_pruned)
@@ -213,6 +223,9 @@ registerDoParallel(cl)
             objective = "regression", 
             metric = "rmse",
             learning_rate=0.1, #default 0.1
+            num_leaves= 31, #2, #optObj_best$num_leaves %>% round(),
+            max_depth= -1, #optObj_best$max_depth %>% round() #,
+            
             #max_bin=63
             #max_bin=15,
             #task="train",
@@ -272,7 +285,7 @@ registerDoParallel(cl)
       #https://cran.r-project.org/web/packages/ParBayesianOptimization/vignettes/tuningHyperparameters.html
 
       #When there's too much missingness it fails
-      scoringFunction <- function(max_depth=-1L,  num_leaves=2, bagging_fraction=1, feature_fraction=1, features_to_keep) { #min_data_in_leaf learning_rate
+      scoringFunction <- function(max_depth=-1L,  num_leaves=31L, bagging_fraction=1, feature_fraction=1, features_to_keep) { #min_data_in_leaf learning_rate
         print(features_to_keep)
         try({
           dtrain_pruned_subset=lgb.Dataset( x_train[,variable_shape_order[1:features_to_keep], drop=F] %>% scale()  %>% Rfast::data.frame.to_matrix(col.names=T) , #it's throwing an error about string size, i'm going to withhold feature names just incase that's the reason
@@ -349,7 +362,7 @@ registerDoParallel(cl)
           objective = "regression", 
           metric = "rmse",
           learning_rate=0.1, #learning_rate,#, #default 0.1
-          num_leaves= 2, #optObj_best$num_leaves %>% round(),
+          num_leaves= 31, #2, #optObj_best$num_leaves %>% round(),
           #" with `feature_pre_filter=true` may cause unexpected behaviour for features that were pre-filtered by the larger "
           #min_data_in_leaf=min_data_in_leaf %>% round(), #we set this in feature_pre filter
           max_depth= -1 #optObj_best$max_depth %>% round() #,
