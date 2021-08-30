@@ -194,7 +194,12 @@ Forecasting work projects known uptake rates some number of weeks into the futur
 
 [@mishraCOVID19VaccineCoverage2021], predicts county level vaccine uptake using CDC data, with a multi-level linear model, fit to a hand engineered ranking indexes of 28 county measures organized into 5 themes (historic under-vaccination, sociodemographic barriers, resource-constrained healthcare system, healthcare accessibility barriers, and irregular care-seeking behavior). Their best performing model has an marginal $R^2$ of only 0.17, which while not directly comparable does illustrate the low starting baseline for accounting for uptake variation in the existing literature. [@stewartInequitiesVulnerableCommunities2021] fit multilevel models of uptake measured by COVIDcast weighted and find nonzero weights placed on COVID-19 Community Vulnerability Index but do not report performance.
 
-The next most direct work is descriptive 
+The next most direct work is descriptive...
+
+Survey studies show that COVID-19 vaccine hesitancy or intention to receive the vaccine is related to education, employment, income, demographics, psychological antecedents, COVID-19 exposure, belief of community benefits, vaccine safety concerns, state political leanings [@chuIntegratingHealthBehavior2021, @malikDeterminantsCOVID19Vaccine2020, @kwokInfluenzaVaccineUptake2021, @tramDeliberationDissentDistrust2021, @kellyPredictorsWillingnessGet]. [@truongWhatFactorsPromoate2021] review 28 studies on vaccine hesitancy around Influenza H1N1 and Ebola and find a similar list of seven relevant factors: demographics (including education and employment), accessibility, personal responsibility and risk perceptions, precautionary measures taken, trust in health authorities and vaccines, the safety and efficacy of a new vaccine, and lack of information or misinformation.
+
+[@pathakPopulationAgeIneligibleCOVID192021] estimate the geographic and ethnic distribution of the vaccine eligible population.
+
 
 # Vaccine Uptake
 
