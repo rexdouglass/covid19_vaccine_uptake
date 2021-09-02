@@ -459,13 +459,18 @@ variable_groups <- variable_groups[!variable_groups %in% c("category_warning_dv"
 x_all_variables <- data.frame(variables=colnames(x_all))
 
 dim(rhs_codebook_total_coded) 
-number_features <- rhs_codebook_total_coded %>% select(starts_with("category_")) %>% summarise_all(sum) %>% t() %>% as.data.frame() %>% rownames_to_column(var = "ablation") %>% rename(features=V1)
+number_features <- rhs_codebook_total_coded %>% select(starts_with("category_")) %>% summarise_all(sum) %>% t() %>% as.data.frame() %>% rownames_to_column(var = "ablation") %>% rename(features=V1) %>% 
+                  add_row(ablation = "category_withold_nothing", features = nrow(rhs_codebook_total_coded))
 
-yid_test_include <- spark_read_parquet(sc, name="yid_test_include", path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_include/performance/" ,memory=F) %>% collect() #include is broken
+yid_test_include <- spark_read_parquet(sc, name="yid_test_include", path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_include/performance/" ,memory=F) %>% collect() 
+yid_test_include_shuffled <- spark_read_parquet(sc, name="yid_test_include", path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_include_shuffled/performance/" ,memory=F) %>% collect() 
+
+
 yid_test_exclude <- spark_read_parquet(sc, name="yid_test_exclude", path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude/performance/" ,memory=F) %>% collect()
 yid_test_cumulative <- spark_read_parquet(sc, name="yid_test_cumulative", path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude_cumulative/performance/" ,memory=F) %>% collect()
 
 null_intercept <- yid_test_include %>% collect() %>% dplyr::select(fold, y_share18plus)
+
 null_intercept <- null_intercept %>% left_join(
   bind_rows(
     null_intercept %>% filter(fold!=1) %>% summarise(y_hat_null_intercept=y_share18plus %>% mean()) %>% mutate(fold=1),
@@ -477,11 +482,23 @@ null_intercept <- null_intercept %>% left_join(
 )
 
 performance_null <- null_intercept %>% summarize(rmse_null_intercept=Metrics::rmse(y_hat_null_intercept, y_share18plus), mae_null_intercept=Metrics::mae(y_hat_null_intercept, y_share18plus))  %>% mutate(ablation="null_intercept")
-performance_include <- yid_test_include %>% collect() %>% group_by(ablation) %>% summarize(rmse_include=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_include=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+
+
+performance_include_shuffled <- yid_test_include_shuffled %>% collect() %>% group_by(ablation) %>% summarize(rmse_include=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_include=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+
+performance_include_seed <- yid_test_include %>% collect() %>%
+                            group_by(ablation,seed) %>% summarize(rmse_include=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_include=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+
 performance_exclude <- yid_test_exclude %>% collect() %>% group_by(ablation) %>% summarize(rmse_exclude=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_exclude=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
-performance_exclude_cumulative <- yid_test_cumulative %>% collect() %>% group_by(ablation) %>% summarize(rmse_exclude_cumulative=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_exclude_cumulative=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+
+performance_exclude_cumulative <- yid_test_cumulative %>% collect() %>% 
+                                  group_by(ablation) %>%
+                                  summarize(rmse_exclude_cumulative=Metrics::rmse(y_hat_test_pruned_optimized, y_share18plus), mae_exclude_cumulative=Metrics::mae(y_hat_test_pruned_optimized, y_share18plus))  
+
+performance_all <- performance_exclude %>% filter(ablation=="keep_category_withold_nothing") %>% dplyr::select(ablation,rmse_all_vars=rmse_exclude)
 
 results <-  performance_null  %>% 
+            full_join(performance_all) %>%
             full_join(performance_include %>%  mutate(ablation=ablation %>% str_replace("keep_","")) ) %>%
             full_join(performance_exclude %>% 
                         mutate(ablation=ablation %>% str_replace("keep_","")) ) %>% 
@@ -491,20 +508,23 @@ results <-  performance_null  %>%
               arrange(rmse_exclude %>% desc() ) %>% 
 
               mutate(rmse_null_intercept=max(rmse_null_intercept, na.rm=T)) %>%
+              mutate(rmse_all_vars=max(rmse_all_vars, na.rm=T)) %>%
+  
               mutate(mae_null_intercept=max(mae_null_intercept, na.rm=T)) %>%
               mutate(rmse_include_percbasline= round( 1 -  rmse_include/rmse_null_intercept, 4 ) * -1 ) %>%
-              mutate(rmse_exclude_percbasline= round( 1 - rmse_exclude/rmse_null_intercept , 4 ) * -1 ) %>%
+              mutate(rmse_exclude_percbasline= round( 1 - rmse_exclude/rmse_all_vars , 4 ) * -1 ) %>%
               mutate(rmse_exclude_cumulative_percbasline= round( 1 - (rmse_exclude_cumulative/rmse_null_intercept) , 4) * -1 ) %>%
               mutate(rmse_include= round(rmse_include*100,2 )) %>%
               mutate(rmse_exclude= round(rmse_exclude*100,2 )) %>%
-              mutate(rmse_exclude_cumulative= round(rmse_exclude_cumulative*100,2 )) 
+              mutate(rmse_exclude_cumulative= round(rmse_exclude_cumulative*100,2 ))
 
                 
 #results %>% view()
 
-results_df <- results %>% 
-  mutate(ablation=ablation %>% str_replace("category_","") ) %>%
-  dplyr::select(category=ablation, features=features, rmse_include, rmse_include_percbasline, rmse_exclude, rmse_exclude_percbasline, rmse_exclude_cumulative, rmse_exclude_cumulative_percbasline)
+results_df <- results  %>%
+              mutate(ablation=ablation %>% str_replace("category_","") ) %>%
+              filter(ablation!="keep_withold_nothing") %>%
+              dplyr::select(category=ablation, features=features, rmse_include, rmse_include_percbasline, rmse_exclude, rmse_exclude_percbasline, rmse_exclude_cumulative, rmse_exclude_cumulative_percbasline)
 
 #install.packages("huxtable")
 library(huxtable)
@@ -512,14 +532,19 @@ results_ht <- results_df %>%
   filter(!category %in% c('null_intercept','va_vaccinations','warning_dv')) %>%
                  as_hux() %>%
                set_number_format(col=c(4,6,8), value= fmt_percent(1)) %>% 
-  set_background_color(evens, everywhere, "grey80") #%>% 
+  set_background_color(evens, everywhere, "grey80") 
   #set_background_color(odds, everywhere, "grey90") #%>% 
   #set_all_borders(brdr(0.4, "solid", "white")) %>% 
   #set_outer_padding(4)
-results_ht[1,] <- c('Category','Count','RMSE','Δ Baseline','RMSE','Δ Baseline','RMSE','Δ Baseline')
+results_ht[1,] <- c('Category','Count','RMSE','Δ vs. Null','RMSE','Δ vs. All','RMSE','Δ vs. Null')
 
-results_ht <- 
-results_ht  %>% theme_compact()  %>% 
+results_ht_final <- results_ht  %>% 
+  #Doing this here just so it's simpler when we start adding rows later
+  set_bold(which((results_ht[,3] %>% as.matrix() %>% as.numeric())== min(results_ht[,3] %>% as.matrix() %>% as.numeric(), na.rm=T)), 3:4) %>%  
+  set_bold(which((results_ht[,5] %>% as.matrix() %>% as.numeric())== max(results_ht[,5] %>% as.matrix() %>% as.numeric(), na.rm=T)), 5:6)  %>% 
+  set_bold(which((results_ht[,7] %>% as.matrix() %>% as.numeric())== min(results_ht[,7] %>% as.matrix() %>% as.numeric(), na.rm=T)), 7:8) %>% 
+  theme_compact()  %>% 
+
   insert_row("Features", "", "Only this Category", "", "All but this Category","","Cumulatively Remove Categories", "", after = 0) %>% 
   merge_cells(1, 1:2) %>% 
   merge_cells(1, 3:4) %>% 
@@ -533,9 +558,7 @@ results_ht  %>% theme_compact()  %>%
   set_header_rows(1:2, TRUE) %>% 
   style_headers(bold = TRUE, text_color = "black") %>% 
   set_caption("County Vaccine Uptake Predictive Performance by Inclusion/Exclusion of Groups of Features") %>% 
-  set_bold(31, 3:4) %>% 
-  set_bold(3, 5:6)  %>% 
-  set_bold(28, 7:8) %>% 
+
   set_right_border(row=1:nrow(results_ht)+1, col=2) %>% 
   set_right_border(row=1:nrow(results_ht)+1, col=4) %>% 
   set_right_border(row=1:nrow(results_ht)+1, col=6) 
@@ -556,13 +579,63 @@ We start broadly, considering the role of large non-mutually exclusive categorie
 
 Our first measure of feature importance is predictive power of a model with access to only features from that category. Here, self reported attitudes towards global warming and solutions towards global warming provide the most direct information (RMSE 8.11, -28.4%). Alone, categories of features vary meaningfully in how much information they provide from a great deal, voting and masking behavior, to hardly any family structure vaccine supply. Our second measure of importance is how much unique information a category of features provides, measured as the change in predictive power of a model with access to every feature but those from that category. Here, model performance degrades the most when voting behavior is withheld (RMSE 7.34, -35.2%). Unlike before, variation in the importance across features is much weaker with many features providing redundant information that can be used to reconstruct the others, a difference in only -4.4% reduction in error from best to worst performance. While global warming beliefs held the most direct information, witholding them and keep all others barely impacts the model, as it can be reconstructed from other features like education and voting behavior. Lastly, we rank order categories of features from most unique to least unique information and cumulatively remove least unique (redundant) features. We find that not only does model performance not degrade, it improves, peaking when we exclude 6 categories of features, marriage, foreign born, covid, global warming, health conditions, and citizenship. Removing access to these features improves model fit, reduces over-fitting, and removing any more than these starts to degrade model performance.
 
+
+
 ```{r, results='markup'}
 
 #Note this table currently has holes in it because 5 categories completely overlapped at least one other category and so couldn't be evaluted in isoaltion.
 
+pal <- function(x, low='#8b0000', mid='#000000', high='#013220', middle=0) {
+  f_neg <- scales::col_numeric(
+    palette = c( low, mid),
+    domain = c(  min(x, na.rm=T), middle)
+  )
+  f_pos <- scales::col_numeric(
+    palette = c(mid, high),
+    domain = c(middle, max(x, na.rm=T))
+  )
+  ifelse(x < middle, f_neg(x), f_pos(x))
+}
+
+
+by_colorspace_rex <- function (low='#8b0000', mid='#000000', high='#013220', middle=0, range = NULL, na_color = NA, ignore_na = TRUE, colwise = FALSE) 
+{
+    #assert_package("by_colorspace", "scales")
+    #palette <- c(...)
+    #assert_that(is.flag(ignore_na), is.flag(colwise))
+    #cn_fn <- scales::col_numeric(palette, domain = range, na.color = na_color)
+    wrapped_cn_fn <- function(x) pal(suppressWarnings(as.numeric(x)), low, mid, high,middle) #cn_fn(suppressWarnings(as.numeric(x)))
+    wrapped_col_numeric <- if (colwise) {
+        function(x) apply(x, 2, wrapped_cn_fn)
+    }
+    else {
+        wrapped_cn_fn
+    }
+    by_function(wrapped_col_numeric, ignore_na = ignore_na)
+}
+
+
+color_low <-  '#228B22' #'#00FF00'
+color_black <- '#000000'
+color_high <- '#FF0000'
 options(huxtable.knit_print_df = T)
-results_ht
+results_ht_final %>%
+  map_text_color(3:nrow(results_ht_final), 3, by_colorspace_rex(low=color_low , mid=color_black, high=color_high, middle=results_ht_final[,3] %>% unlist() %>% as.numeric() %>% mean(na.rm=T), colwise = TRUE) ) %>%
+  map_text_color(3:nrow(results_ht_final), 4, by_colorspace_rex(low=color_low , mid=color_black, high=color_high, middle=results_ht_final[,4] %>% unlist() %>% as.numeric() %>% mean(na.rm=T), colwise = TRUE) ) %>%
+
+  map_text_color(3:nrow(results_ht_final), 5,
+                 by_colorspace_rex(low=color_low , mid=color_black, high=color_high ,
+                                   middle=(results_ht_final[,5] %>% unlist())[which( results_ht_final[,6] %>% unlist() %>% as.numeric()==0 )] %>% as.numeric(), colwise = TRUE) ) %>%
+  map_text_color(3:nrow(results_ht_final), 6, by_colorspace_rex(low=color_low, mid=color_black, high=color_high, middle=0, colwise = TRUE) ) %>%
+
+  map_text_color(3:nrow(results_ht_final), 7, by_colorspace_rex(low=color_low , mid=color_black, high=color_high , middle=results_ht_final[,7] %>% unlist() %>% as.numeric() %>% mean(na.rm=T), colwise = TRUE) ) %>%
+  map_text_color(3:nrow(results_ht_final), 8, by_colorspace_rex(low=color_low , mid=color_black, high=color_high, middle=results_ht_final[,8] %>% unlist() %>% as.numeric() %>% mean(na.rm=T), colwise = TRUE) ) 
+  
+    
+  #map_text_color(3:nrow(results_ht_final), 5:6, by_colorspace(low="darkred", mid="black", high="darkgreen", colwise = TRUE) )
+
 ```
+
 
 ```{r , include=knitr::is_latex_output()}
 #You have to use results asis
@@ -581,6 +654,29 @@ treeshap_all %>% head()
 treeshap_top <- treeshap_all %>% filter(ablation=="exclude_category_transportation") #%>% dplyr::select(-starts_with("category_")) %>%
                  #collect()
 sdf_nrow(treeshap_top)
+
+
+treeshap_interactions <- spark_read_parquet(sc, name="treeshap_interactions",path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/results_exclude_cumulative/shap_interactions/" ,memory=F) 
+sdf_nrow(treeshap_interactions) #140,600,572
+
+#Top interactions
+treeshap_interactions_summarized_rank <- treeshap_interactions %>% 
+                                          filter(ablation=="exclude_category_transportation")  %>%
+                                          filter(variable_a!=variable_b) %>%
+                                          group_by(variable_a,variable_b) %>% 
+                                          summarise(shap_total=sum(abs(shap), na.rm=T)) %>%
+                                          filter(shap_total>0) %>%
+                                          collect()
+
+treeshap_interactions_summarized_rank %>% arrange(desc(shap_total)) %>% filter(!duplicated(variable_a))
+
+
+treeshap_interactions_summarized <- treeshap_interactions %>% 
+                                    filter(ablation=="exclude_category_transportation") %>%
+                                    mutate(covariate_value_a=covariate_value_a %>% round(2)) %>% mutate(covariate_value_b=covariate_value_b %>% round(2)) %>%
+                                    group_by(variable_a,variable_b, covariate_value_a, covariate_value_b) %>% 
+                                    summarise(shap=mean(shap, na.rm=T)) 
+sdf_nrow(treeshap_interactions_summarized) #18,649,580
 
 #4 causes the first error, 5 too, 6 too
 
@@ -655,6 +751,11 @@ for(i in 1:length(shap_total$variable[round(shap_total$shap>0)]) ){
   ggsave(filename=glue::glue("/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs/plots/p_ablation_marginal_fx_{i}.png") ,
          plot = p , height=0.1, width=0.3)
 }
+
+
+
+
+treeshap_top
 
 ```
 
@@ -772,6 +873,7 @@ top_5_vars_by_abblation %>%
 
 
 ```
+
 
 
 # References
