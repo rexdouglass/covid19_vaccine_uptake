@@ -2553,7 +2553,7 @@ lhs_state  %>%
 #cols <- lapply(filenames, FUN=function(x){ x %>%  arrow::read_parquet() %>% colnames() } ) # even this is not great
 
 #rhs_long <- arrow::open_dataset(sources="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs/") #%>% collect()
-rhs_long <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs/" ,memory=F) 
+rhs_long <- spark_read_parquet(sc, path="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/data_out/rhs/", memory=F) 
 #rhs_long %>% head()
 
 #dim(rhs_long) #263,862,163

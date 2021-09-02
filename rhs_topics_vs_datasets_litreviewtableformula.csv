@@ -1,0 +1,36 @@
+,V1,V2,V3,V4,V5,V6,V7,V8,V9,V10,V11,V12,V13,V14,V15,V16,,,,,,,,,,,,,,,,,,
+dataset,acs1,acs5,bae,census_2020_actual,census2020,cew,countyhealthrankings,covid19projections,google,"MIT Election Data and Science Lab, 2018, County Presidential Election Returns 2000-2020",NYT,safegraph,therda,vaccinedotgov,WARNING_LHS_on_the_RHS,yale,,,,,,,,,,,,,,,,,,
+sex_male_women_men_female,1,1,1,0,1,1,1,0,0,0,0,0,1,0,0,1,"acs1, ","acs5, ","bae, ",,"census2020, ","cew, ","countyhealthrankings, ",,,,,,"therda, ",,,"yale, ","acs1, acs5, bae, census2020, cew, countyhealthrankings, therda, yale, ","acs1, acs5, bae, census2020, cew, countyhealthrankings, therda, yale"
+age_years_old,1,1,1,0,1,1,0,0,0,0,0,0,1,0,0,0,"acs1, ","acs5, ","bae, ",,"census2020, ","cew, ",,,,,,,"therda, ",,,,"acs1, acs5, bae, census2020, cew, therda, ","acs1, acs5, bae, census2020, cew, therda"
+race_black_indian_hispanic_white_ancestry_asian_hawaiian_language,1,1,0,1,1,0,0,0,0,0,0,0,1,0,0,0,"acs1, ","acs5, ",,"census_2020_actual, ","census2020, ",,,,,,,,"therda, ",,,,"acs1, acs5, census_2020_actual, census2020, therda, ","acs1, acs5, census_2020_actual, census2020, therda"
+citizenship,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"acs1, ","acs5, ",,,,,,,,,,,,,,,"acs1, acs5, ","acs1, acs5"
+nativity_foreign,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"acs1, ","acs5, ",,,,,,,,,,,,,,,"acs1, acs5, ","acs1, acs5"
+naturalization,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"acs1, ","acs5, ",,,,,,,,,,,,,,,"acs1, acs5, ","acs1, acs5"
+place_of_birth,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"acs1, ","acs5, ",,,,,,,,,,,,,,,"acs1, acs5, ","acs1, acs5"
+marital_spouse_widowed,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"acs1, ","acs5, ",,,,,,,,,,,,,,,"acs1, acs5, ","acs1, acs5"
+education_school_college_degree,1,1,1,0,0,1,0,0,0,0,0,0,0,0,0,1,"acs1, ","acs5, ","bae, ",,,"cew, ",,,,,,,,,,"yale, ","acs1, acs5, bae, cew, yale, ","acs1, acs5, bae, cew, yale"
+poverty_income_earnings_food_stamps_labor_force_employment,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,"acs1, ","acs5, ",,,,,,,,,,,,,,"yale, ","acs1, acs5, yale, ","acs1, acs5, yale"
+geographical_mobility,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"acs1, ","acs5, ",,,,,,,,,,,,,,,"acs1, acs5, ","acs1, acs5"
+transportation,1,1,1,0,0,1,0,0,0,0,0,0,0,0,0,0,"acs1, ","acs5, ","bae, ",,,"cew, ",,,,,,,,,,,"acs1, acs5, bae, cew, ","acs1, acs5, bae, cew"
+work_ccupation_employment,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0,0,"acs1, ","acs5, ",,,,,,,"google, ",,,,,,,,"acs1, acs5, google, ","acs1, acs5, google"
+household,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"acs1, ","acs5, ",,,,,,,,,,,,,,,"acs1, acs5, ","acs1, acs5"
+vehicle_telephone_internet,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,"acs1, ","acs5, ",,,,,,,,,,,,,,"yale, ","acs1, acs5, yale, ","acs1, acs5, yale"
+population,1,1,0,1,1,0,0,0,0,0,0,1,1,0,0,0,"acs1, ","acs5, ",,"census_2020_actual, ","census2020, ",,,,,,,"safegraph, ","therda, ",,,,"acs1, acs5, census_2020_actual, census2020, safegraph, therda, ","acs1, acs5, census_2020_actual, census2020, safegraph, therda"
+children_adults_grandchildren_family_type_birth,1,1,0,0,0,0,1,0,0,0,0,0,0,0,0,0,"acs1, ","acs5, ",,,,,"countyhealthrankings, ",,,,,,,,,,"acs1, acs5, countyhealthrankings, ","acs1, acs5, countyhealthrankings"
+disability_hearing_vision_cognitive_ambulatory_difficulty_disabilities,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"acs1, ","acs5, ",,,,,,,,,,,,,,,"acs1, acs5, ","acs1, acs5"
+insurance_medicaid_va_health_care_tricare,1,1,1,0,0,1,0,0,0,0,0,0,0,1,0,0,"acs1, ","acs5, ","bae, ",,,"cew, ",,,,,,,,"vaccinedotgov, ",,,"acs1, acs5, bae, cew, vaccinedotgov, ","acs1, acs5, bae, cew, vaccinedotgov"
+veteran_civilian_military_tricare,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"acs1, ","acs5, ",,,,,,,,,,,,,,,"acs1, acs5, ","acs1, acs5"
+housing_occupancy_tenure_mortgage_heating_rent_value_price_mortgage,1,1,1,0,0,1,0,0,0,0,0,0,1,0,0,0,"acs1, ","acs5, ","bae, ",,,"cew, ",,,,,,,"therda, ",,,,"acs1, acs5, bae, cew, therda, ","acs1, acs5, bae, cew, therda"
+industry_gdp_people_employed,1,1,1,0,0,1,0,0,0,0,0,0,0,0,0,0,"acs1, ","acs5, ","bae, ",,,"cew, ",,,,,,,,,,,"acs1, acs5, bae, cew, ","acs1, acs5, bae, cew"
+religion,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,,,,,,,,,,,,,"therda, ",,,,"therda, ",therda
+vaccine_supply_supply_vaccine,0,0,0,0,0,0,0,0,1,0,0,0,0,1,0,0,,,,,,,,,"google, ",,,,,"vaccinedotgov, ",,,"google, vaccinedotgov, ","google, vaccinedotgov"
+vaccinations_through_veterans,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,,,,,,,,,,,,,,,,,,#VALUE!
+warning_dv,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,,,,,,,,,,,,,,,"WARNING_LHS_on_the_RHS, ",,"WARNING_LHS_on_the_RHS, ",WARNING_LHS_on_the_RHS
+who_self_report_think,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,,,,,,,,,,,,,,,,"yale, ","yale, ",yale
+obesity_smoking_birthweight_fair_health,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,,,,,,,"countyhealthrankings, ",,,,,,,,,,"countyhealthrankings, ",countyhealthrankings
+dentists_mammography_preventable_hospital_primary_care,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,,,,,,,"countyhealthrankings, ",,,,,,,,,,"countyhealthrankings, ",countyhealthrankings
+flu_vaccination_would_accept_vaccination,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,,,,,,,"countyhealthrankings, ",,,,,,,,,,"countyhealthrankings, ",countyhealthrankings
+mobility_mobility_population,1,1,0,0,0,0,0,0,1,0,0,1,0,0,0,0,"acs1, ","acs5, ",,,,,,,"google, ",,,"safegraph, ",,,,,"acs1, acs5, google, safegraph, ","acs1, acs5, google, safegraph"
+covid_infections,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,,,,,,,,"covid19projections, ",,,,,,,,,"covid19projections, ",covid19projections
+masking,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,,,,,,,,,,,"NYT, ",,,,,,"NYT, ",NYT
+politics,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,,,,,,,,,,"MIT Election Data and Science Lab, 2018, County Presidential Election Returns 2000-2020, ",,,,,,,"MIT Election Data and Science Lab, 2018, County Presidential Election Returns 2000-2020, ","MIT Election Data and Science Lab, 2018, County Presidential Election Returns 2000-2020"

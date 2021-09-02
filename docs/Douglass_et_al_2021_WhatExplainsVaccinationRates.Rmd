@@ -174,18 +174,18 @@ We organize the research on vaccine uptake along the following lines. In this se
 ```{r}
 
 p_load(googlesheets4)
-lit_review <- googlesheets4::read_sheet("https://docs.google.com/spreadsheets/d/1XGVatAyKU_oJyIW_JAuXsxw__gSm6g7ZLNfXQfqAfbE/edit?usp=sharing")
-
+lit_review_lhs <- googlesheets4::read_sheet("https://docs.google.com/spreadsheets/d/1XGVatAyKU_oJyIW_JAuXsxw__gSm6g7ZLNfXQfqAfbE/edit?usp=sharing")
+lit_review_rhs <- googlesheets4::read_sheet("https://docs.google.com/spreadsheets/d/1XGVatAyKU_oJyIW_JAuXsxw__gSm6g7ZLNfXQfqAfbE/edit#gid=870929858")
+lit_review_datasets <- googlesheets4::read_sheet("https://docs.google.com/spreadsheets/d/1XGVatAyKU_oJyIW_JAuXsxw__gSm6g7ZLNfXQfqAfbE/edit#gid=1136309785")
 ```
 
 ```{r, results="asis"}
 
 #Tom, or whoever, asis and or format='markdown' used to work for just putting cites directly in a tbale. I don't know why it doesn't work anymore, current theory is rnotebook doesn't like it and maybe bookdown or something else will
-lit_review %>% kableExtra::kable(format = "markdown")
+lit_review_lhs %>% kableExtra::kable(format = "markdown")
 #require(huxtable)
 #lit_review %>% as_hux %>%
 #    set_caption("Hux table") 
-
 ```
 
 The state of the art for explaining COVID-19 vaccine uptake across geographic units in the U.S. is poorly defined and incomplete. There is no accepted standard benchmark for comparing performance of competing explanations, each study picks their own subset of untis, time cut off, and data source on an ad hoc basis. With the exception of a very small literature attempting to forecast vaccine rates, this work is largely exploratory, focusing on whether a simple model places non-zero weight on a feature and reporting only in sample performance or ignoring performance all together. 
@@ -196,7 +196,20 @@ Forecasting work projects known uptake rates some number of weeks into the futur
 
 The next most direct work is descriptive...
 
-Survey studies show that COVID-19 vaccine hesitancy or intention to receive the vaccine is related to education, employment, income, demographics, psychological antecedents, COVID-19 exposure, belief of community benefits, vaccine safety concerns, state political leanings [@chuIntegratingHealthBehavior2021, @malikDeterminantsCOVID19Vaccine2020, @kwokInfluenzaVaccineUptake2021, @tramDeliberationDissentDistrust2021, @kellyPredictorsWillingnessGet]. [@truongWhatFactorsPromoate2021] review 28 studies on vaccine hesitancy around Influenza H1N1 and Ebola and find a similar list of seven relevant factors: demographics (including education and employment), accessibility, personal responsibility and risk perceptions, precautionary measures taken, trust in health authorities and vaccines, the safety and efficacy of a new vaccine, and lack of information or misinformation.
+
+```{r, results="asis"}
+
+#Tom, or whoever, asis and or format='markdown' used to work for just putting cites directly in a tbale. I don't know why it doesn't work anymore, current theory is rnotebook doesn't like it and maybe bookdown or something else will
+lit_review_rhs %>% kableExtra::kable(format = "markdown")
+#require(huxtable)
+#lit_review %>% as_hux %>%
+#    set_caption("Hux table") 
+```
+
+
+
+
+Survey studies show that COVID-19 vaccine hesitancy or intention to receive the vaccine is related to education, employment, income, demographics, psychological antecedents, COVID-19 exposure, belief of community benefits, vaccine safety concerns, state political leanings [@chuIntegratingHealthBehavior2021, @malikDeterminantsCOVID19Vaccine2020, @kwokInfluenzaVaccineUptake2021, @tramDeliberationDissentDistrust2021, @kellyPredictorsWillingnessGet]. [@truongWhatFactorsPromote2021] review 28 studies on vaccine hesitancy around Influenza H1N1 and Ebola and find a similar list of seven relevant factors: demographics (including education and employment), accessibility, personal responsibility and risk perceptions, precautionary measures taken, trust in health authorities and vaccines, the safety and efficacy of a new vaccine, and lack of information or misinformation.
 
 [@pathakPopulationAgeIneligibleCOVID192021] estimate the geographic and ethnic distribution of the vaccine eligible population.
 
@@ -207,9 +220,25 @@ Survey studies show that COVID-19 vaccine hesitancy or intention to receive the 
 
 Our outcome ($VaccineUptake$) is the number of persons at least partially vaccinated in each county ($Vaccinated$) divided by the over 18 population measured by the recent 2020 census ($Pop18+$). We choose this specific outcome instead of nearby alternatives such as fully vaccinated, or percent of eligible population, for several reasons. First, our substantive practical interest is in why some Americans who are not currently vaccinated might become vaccinated in the near future. Those that receive one dose are likely to receive the second, those that don't are at least have partially immunity, and for measurement purposes some vaccines such as Johnson & Johnson only require one dose and constitute fully vaccinated. Second, eligibility criteria is endogenous to uptake across groups first in line and in any case nearly uniform across states now. We choose the denominator of 18 plus population because it is much more accurately measured in the recent 2020 census release than 12 plus population based on extrapolations from the 2010 census and because vaccination for children 12 to 18 is still much more uncommon in the U.S.
 
+As features, we include the datasets shown in table XXX.^[See the github repository for a full list of variables]  
+
 We choose out of sample root mean squared error (RMSE) as our performance metric $L(\hat{VaccineUptake_{oob}}, VaccineUptake_{oob})$.
 
 We limit our domain to the continental United States, excluding Alaska, Hawaii, and island territories because of their unique logistical constraints in vaccine distribution. Our unit of analysis is the U.S. county at a single time point, July 1, 2021. Counties are the smallest dissagregation available for the entire U.S. as zip-code level data is available for a few states, and cross-unit measurement error encountered already at the county level make us dubious about zooming in with current data.
+
+
+
+```{r, results="asis"}
+
+#Tom, or whoever, asis and or format='markdown' used to work for just putting cites directly in a tbale. I don't know why it doesn't work anymore, current theory is rnotebook doesn't like it and maybe bookdown or something else will
+lit_review_lhs %>% kableExtra::kable(format = "markdown")
+#require(huxtable)
+#lit_review %>% as_hux %>%
+#    set_caption("Hux table") 
+```
+
+
+
 
 
 ## Measurement Strategy
@@ -257,6 +286,7 @@ ggsave(filename="/mnt/8tb_a/rwd_github_private/TrumpSupportVaccinationRates/docs
 p_test_folds
 
 ```
+
 
 Our feature selection strategy proceeds in three steps. First, our modelling technology is gradient boosted trees (GTB) which is a greedy algorithm that iteratively includes features until a condition is met. This immediately prunes most features that are never selected in any of the folds. Second, we subset to consensus features that are chosen in at least 2 of the 4 CV folds further reducing to just features that found broad geographic support. Our final step is to drop features which do not improve out of sample CV performance. Directly checking the performance of every subset is intractable ($k!$ many possible subsets), and so we rank order features by suspected importance and test the $k$ number of cumulative sets. Our measure of importance is the LossSHAP value which is the change in residuals on the hold out validation set when we subtract off the marginal contribution (SHAP value) of each feature [@lundbergLocalExplanationsGlobal2020]. This criteria is most directly relevant to the outcome we care about, performance on unseen out of sample data, and allows for the possibility of negative importance where a feature leads to over-fitting and doesn't generalize.
 
@@ -381,35 +411,15 @@ vaccination.
 
 
 
-Predictors of willingness to get a COVID-19 vaccine in the U.S
-<https://bmcinfectdis.biomedcentral.com/articles/10.1186/s12879-021-06023-9>
-[@kellyPredictorsWillingnessGet2021]
-
-<https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7993557/>
-[@hughesCountyLevelCOVID19Vaccination2021]
-
-
-
-
-social vulnerability [@hughesCountyLevelCOVID19Vaccination2021]
-
-
-
-
-
 https://aspe.hhs.gov/pdf-report/vaccine-hesitancy
 
 The most proximate measure of demand available is survey self reported desire to receive a vaccine. COVID-19 Trends and Impact Survey (CTIS) run by the Delphi group at Carnegie Mellon [@barkayWeightsMethodologyBrief2020]
 We propose to measure demand most directly with survey questions of self reported desire for a vaccination. 
 
 
-
 typically referred to as vaccine hesitancy,
 
-[@truongWhatFactorsPromote2021]
-
 [@pittsHealthLiteracyCommon2021]
-
 
 https://www.va.gov/vetdata/veteran_population.asp
 Vertans per county
@@ -417,15 +427,8 @@ https://www.va.gov/vetdata/veteran_population.asp
 
 
 
-[@brownCOVID19VaccinationRates2021]
 
 
-
-Large scale cross-national polling of vaccine confidence [@figueiredoMappingGlobalTrends2020].
-
-Same features also predict deaths [@ruckEarlyWarningVulnerable2021]
-
-features continue to be important at the subcounty neighborhood level [@leiHyperFocusingLocal2021]
 
 Download Options
 Covid-19 Vaccination Provider Locations in the United States
