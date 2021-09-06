@@ -400,16 +400,11 @@ VaxMap 2.0 Number of facilities and driving distance to a facility [@zotero-3619
 
 Vaccinations per day increased week on week, peaking to average of 3 million per day in early April, and now tapering to about half a million per day.
 
-The most proximate measure of demand available is survey self reported
-desire to receive a vaccine. The COVID-19 Trends and Impact Survey
-(CTIS) run by the Delphi group at Carnegie Mellon in partnership with
-Facebook
+The most proximate measure of demand available is survey self reported desire to receive a vaccine. The COVID-19 Trends and Impact Survey (CTIS) run by the Delphi group at Carnegie Mellon in partnership with Facebook
 
-[@barkayWeightsMethodologyBrief2020] We propose to measure demand most
-directly with survey questions of self reported desire for a
-vaccination.
+[@barkayWeightsMethodologyBrief2020] We propose to measure demand most directly with survey questions of self reported desire for a vaccination.
 
-
+@bradleyAreWeThere2021 argue that the Delphi-facebook and Census Household Pulse surveys are biased compared to CDC estimates and overconfident because of their sample size  (pre-print).
 
 https://aspe.hhs.gov/pdf-report/vaccine-hesitancy
 
